@@ -5,8 +5,10 @@ edition = "2021"
 
 [dependencies]
 burn = { workspace = true, features = ["std", "ndarray", "wgpu"] }
+burn-ndarray = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
-tokenizers = "0.19"
+tokenizers = { workspace = true }
 rubato = { workspace = true }
 hound = { workspace = true }
+audioadapter-buffers = "2.0"

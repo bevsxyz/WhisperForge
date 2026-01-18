@@ -1,5 +1,5 @@
+use crate::VoiceActivityDetector;
 use anyhow::Result;
-use whisperforge_align::{VoiceActivityDetector, VoiceSegment};
 use whisperforge_core::audio::AudioData;
 
 /// Audio segmentation using VAD for batched processing
@@ -15,9 +15,9 @@ impl AudioSegmenter {
     pub fn new(sample_rate: u32) -> Self {
         Self {
             vad: VoiceActivityDetector::new(sample_rate),
-            min_segment_length: 1.0, // 1 second minimum
+            min_segment_length: 1.0,  // 1 second minimum
             max_segment_length: 30.0, // 30 second maximum
-            pad_duration: 0.1, // 100ms padding
+            pad_duration: 0.1,        // 100ms padding
         }
     }
 
@@ -58,8 +58,7 @@ impl AudioSegmenter {
 
             // Add padding
             let padded_start = (voice_seg.start_time - self.pad_duration).max(0.0);
-            let padded_end = (voice_seg.end_time + self.pad_duration)
-                .min(audio.duration());
+            let padded_end = (voice_seg.end_time + self.pad_duration).min(audio.duration().into());
 
             // Convert to sample indices
             let start_sample = (padded_start * audio.sample_rate as f64) as usize;
@@ -112,7 +111,11 @@ impl AudioSegmenter {
     }
 
     /// Merge segments that are close together
-    pub fn merge_segments(&self, segments: &[AudioSegment], max_gap: f64) -> Result<Vec<AudioSegment>> {
+    pub fn merge_segments(
+        &self,
+        segments: &[AudioSegment],
+        max_gap: f64,
+    ) -> Result<Vec<AudioSegment>> {
         let mut merged = Vec::new();
         let mut current: Option<AudioSegment> = None;
 
@@ -232,7 +235,7 @@ mod tests {
     #[test]
     fn test_merge_segments() -> Result<()> {
         let segmenter = AudioSegmenter::new(16000);
-        
+
         let segments = vec![
             AudioSegment {
                 start_sample: 0,

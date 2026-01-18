@@ -11,10 +11,14 @@ resolver = "2"
 [workspace.dependencies]
 # Core ML framework (minimal features for now)
 burn = { version = "0.20.0", features = ["std", "ndarray"] }
+burn-ndarray = "0.20.0"
 
 # Audio processing
 rubato = "1.0"
 hound = "3.5"
+
+# Text processing
+tokenizers = "0.20"
 
 # VAD and alignment
 earshot = "0.1"

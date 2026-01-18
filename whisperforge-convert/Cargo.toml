@@ -1,6 +1,18 @@
 [package]
 name = "whisperforge-convert"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+whisperforge-core = { path = "../whisperforge-core" }
+burn = { workspace = true, features = ["std", "train"] }
+burn-ndarray = { workspace = true }
+candle-core = "0.9.1"
+safetensors = "0.4.2"
+hf-hub = { version = "0.3.2", features = ["tokio"] }
+tokio = { version = "1.36.0", features = ["full"] }
+anyhow = "1.0.79"
+clap = { version = "4.5.1", features = ["derive"] }
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+half = "2.3.1"

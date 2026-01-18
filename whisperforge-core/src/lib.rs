@@ -1,8 +1,8 @@
 use anyhow::Result;
-use burn::tensor::{backend::Backend, Int, Tensor};
+use burn::tensor::{backend::Backend, Tensor};
 
-pub mod model;
 pub mod audio;
+pub mod model;
 
 pub use model::{WhisperConfig, WhisperModel};
 
@@ -24,7 +24,8 @@ pub struct TranscriptionResult {
 
 pub trait WhisperInference<B: Backend> {
     fn transcribe(&self, mel_features: Tensor<B, 3>) -> Result<TranscriptionResult>;
-    fn transcribe_with_timestamps(&self, mel_features: Tensor<B, 3>) -> Result<TranscriptionResult>;
+    fn transcribe_with_timestamps(&self, mel_features: Tensor<B, 3>)
+        -> Result<TranscriptionResult>;
 }
 
 // Token handling utilities
@@ -32,7 +33,6 @@ pub const SPECIAL_TOKENS: &str = "<|startoftranscript|> <|translate|> <|transcri
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn it_works() {

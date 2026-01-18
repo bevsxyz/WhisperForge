@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 # Workspace dependencies
+burn = { workspace = true, features = ["std", "ndarray"] }
+burn-ndarray = { workspace = true }
 earshot = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

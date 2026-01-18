@@ -13,3 +13,6 @@ clap = { workspace = true, features = ["derive"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokenizers = "0.19"
+burn = { workspace = true, features = ["std", "ndarray"] }
+burn-ndarray = { workspace = true }

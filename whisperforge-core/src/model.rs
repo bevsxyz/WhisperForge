@@ -1,17 +1,17 @@
 use anyhow::Result;
 use burn::{
     config::Config,
-    module::Module,
+    module::{Ignored, Module},
     nn::{
-        attention::MhaInput,
         conv::{Conv1d, Conv1dConfig},
-        embedding::EmbeddingConfig,
-        transform::TransformerDecoderConfig, TransformerEncoderConfig,
-        Embedding, LayerNorm, Linear, Relu, TransformerDecoder, TransformerEncoder,
+        transformer::{
+            TransformerDecoder, TransformerDecoderConfig, TransformerDecoderInput,
+            TransformerEncoder, TransformerEncoderConfig, TransformerEncoderInput,
+        },
+        Embedding, EmbeddingConfig, LayerNorm, PaddingConfig1d,
     },
     tensor::{backend::Backend, Bool, Int, Tensor},
 };
-use serde::{Deserialize, Serialize};
 
 #[derive(Config, Debug)]
 pub struct WhisperConfig {
@@ -25,30 +25,6 @@ pub struct WhisperConfig {
     pub n_text_head: usize,
     pub n_text_layer: usize,
     pub n_vocab: usize,
-}
-
-impl Default for WhisperConfig {
-    fn default() -> Self {
-        Self {
-            n_mels: 80,
-            n_audio_ctx: 1500,
-            n_audio_state: 1280,
-            n_audio_head: 20,
-            n_audio_layer: 32,
-            n_text_ctx: 448,
-            n_text_state: 1280,
-            n_text_head: 20,
-            n_text_layer: 32,
-            n_vocab: 51864,
-        }
-    }
-}
-
-#[derive(Module, Debug)]
-pub struct WhisperModel<B: Backend> {
-    encoder: WhisperEncoder<B>,
-    decoder: WhisperDecoder<B>,
-    config: WhisperConfig,
 }
 
 impl WhisperConfig {
@@ -145,22 +121,24 @@ impl WhisperConfig {
 
 #[derive(Module, Debug)]
 pub struct WhisperEncoder<B: Backend> {
-    conv1: Conv1d<B>,
-    conv2: Conv1d<B>,
-    pos_emb: Embedding<B>,
-    blocks: Vec<TransformerEncoder<B>>,
-    ln_post: LayerNorm<B>,
+    pub conv1: Conv1d<B>,
+    pub conv2: Conv1d<B>,
+    pub pos_emb: Embedding<B>,
+    pub blocks: Vec<TransformerEncoder<B>>,
+    pub ln_post: LayerNorm<B>,
 }
 
 impl<B: Backend> WhisperEncoder<B> {
     pub fn new(config: &WhisperConfig, device: &B::Device) -> Self {
-        let conv1_config = Conv1dConfig::new(config.n_mels, config.n_audio_state, 3, 1)
-            .with_padding(burn::nn::padding::PaddingConfig1d::Explicit(1))
+        let conv1_config = Conv1dConfig::new(config.n_mels, config.n_audio_state, 3)
+            .with_stride(1)
+            .with_padding(PaddingConfig1d::Explicit(1))
             .with_bias(true);
         let conv1 = conv1_config.init(device);
 
-        let conv2_config = Conv1dConfig::new(config.n_audio_state, config.n_audio_state, 3, 1)
-            .with_padding(burn::nn::padding::PaddingConfig1d::Explicit(1))
+        let conv2_config = Conv1dConfig::new(config.n_audio_state, config.n_audio_state, 3)
+            .with_stride(2)
+            .with_padding(PaddingConfig1d::Explicit(1))
             .with_bias(true);
         let conv2 = conv2_config.init(device);
 
@@ -173,6 +151,7 @@ impl<B: Backend> WhisperEncoder<B> {
                 config.n_audio_state,
                 config.n_audio_head,
                 config.n_audio_state / config.n_audio_head,
+                config.n_audio_state * 4,
             )
             .with_norm_first(true);
             blocks.push(block_config.init(device));
@@ -195,22 +174,26 @@ impl<B: Backend> WhisperEncoder<B> {
 
         let x = x.swap_dims(1, 2);
         let x = self.conv1.forward(x);
-        let x = x.relu();
+        let x = burn::tensor::activation::relu(x);
         let x = self.conv2.forward(x);
-        let x = x.relu();
+        let x = burn::tensor::activation::relu(x);
 
         let x = x.swap_dims(1, 2);
 
         // Add positional embeddings
-        let pos_ids = Tensor::arange(0..seq_len, &x.device())
+        let pos_ids = Tensor::arange(0..seq_len as i64, &x.device())
             .reshape([1, seq_len])
-            .repeat(batch_size, 0);
+            .repeat(&[batch_size, 1]);
         let x = x + self.pos_emb.forward(pos_ids);
 
         // Pass through transformer blocks
         let mut hidden_states = x;
         for block in &self.blocks {
-            hidden_states = block.forward(hidden_states, mask.clone());
+            let mut input = TransformerEncoderInput::new(hidden_states);
+            if let Some(ref m) = mask {
+                input = input.mask_pad(m.clone());
+            }
+            hidden_states = block.forward(input);
         }
 
         self.ln_post.forward(hidden_states)
@@ -219,10 +202,10 @@ impl<B: Backend> WhisperEncoder<B> {
 
 #[derive(Module, Debug)]
 pub struct WhisperDecoder<B: Backend> {
-    token_embedding: Embedding<B>,
-    pos_emb: Embedding<B>,
-    blocks: Vec<TransformerDecoder<B>>,
-    ln: LayerNorm<B>,
+    pub token_embedding: Embedding<B>,
+    pub pos_emb: Embedding<B>,
+    pub blocks: Vec<TransformerDecoder<B>>,
+    pub ln: LayerNorm<B>,
 }
 
 impl<B: Backend> WhisperDecoder<B> {
@@ -239,6 +222,7 @@ impl<B: Backend> WhisperDecoder<B> {
                 config.n_text_state,
                 config.n_text_head,
                 config.n_text_state / config.n_text_head,
+                config.n_text_state * 4,
             )
             .with_norm_first(true);
             blocks.push(block_config.init(device));
@@ -264,28 +248,40 @@ impl<B: Backend> WhisperDecoder<B> {
         let [batch_size, seq_len] = x.dims();
 
         let x = self.token_embedding.forward(x);
-        let pos_ids = Tensor::arange(0..seq_len, &x.device())
+        let pos_ids = Tensor::arange(0..seq_len as i64, &x.device())
             .reshape([1, seq_len])
-            .repeat(batch_size, 0);
+            .repeat(&[batch_size, 1]);
         let x = x + self.pos_emb.forward(pos_ids);
 
-        // Pass through transformer decoder blocks
         let mut hidden_states = x;
+
         for block in &self.blocks {
-            let mha_input = MhaInput::new(hidden_states.clone(), mask.clone());
-            hidden_states = block.forward(mha_input);
+            // Self-attention input (Query = Key = Value = hidden_states)
+            // Cross-attention input (Key = Value = encoder_output)
+
+            // In Burn 0.13/0.14+, TransformerDecoderInput::new takes (target, memory).
+            // It automatically handles creating MhaInput internally or expects raw tensors.
+            // Based on error: "expected Tensor, found MhaInput".
+
+            let mut input =
+                TransformerDecoderInput::new(hidden_states.clone(), encoder_output.clone());
+
+            if let Some(ref m) = mask {
+                input = input.memory_mask_pad(m.clone());
+            }
+
+            hidden_states = block.forward(input);
         }
 
-        hidden_states = self.ln.forward(hidden_states);
-
-        // Cross-attention with encoder output
-        let encoder_output_squeezed = encoder_output.squeeze::<1>(0);
-        let mha_input = MhaInput::new(hidden_states, mask);
-        
-        // Use a simple cross-attention implementation
-        // In practice, this would be more complex
-        hidden_states
+        self.ln.forward(hidden_states)
     }
+}
+
+#[derive(Module, Debug)]
+pub struct WhisperModel<B: Backend> {
+    pub encoder: WhisperEncoder<B>,
+    pub decoder: WhisperDecoder<B>,
+    pub config: Ignored<WhisperConfig>,
 }
 
 impl<B: Backend> WhisperModel<B> {
@@ -296,20 +292,103 @@ impl<B: Backend> WhisperModel<B> {
         Self {
             encoder,
             decoder,
-            config,
+            config: Ignored(config),
         }
     }
 
     pub fn forward(&self, x: Tensor<B, 3>, tokens: Tensor<B, 2, Int>) -> Tensor<B, 3> {
         let encoder_output = self.encoder.forward(x, None);
-        
+
         let seq_len = tokens.dims()[1];
-        let decoder_input = Tensor::zeros([1, seq_len], &tokens.device()).int();
+        let decoder_input = Tensor::<B, 2, Int>::zeros([1, seq_len], &tokens.device());
         self.decoder.forward(decoder_input, encoder_output, None)
     }
 
     pub fn config(&self) -> &WhisperConfig {
-        &self.config
+        &self.config.0
+    }
+
+    pub fn forward_decoder_logits(
+        &self,
+        tokens: Tensor<B, 2, Int>,
+        encoder_output: Tensor<B, 3>,
+    ) -> Tensor<B, 3> {
+        let hidden = self.decoder.forward(tokens, encoder_output, None);
+        // Project to logits: hidden @ embedding.weight.T
+        // hidden: [batch, seq, state] (rank 3)
+        // embedding.weight: [vocab, state]
+        // transpose: [state, vocab]
+        // Need to unsqueeze to [1, state, vocab] for broadcast
+        let embedding_weight = self.decoder.token_embedding.weight.val();
+        let weight_t = embedding_weight.transpose().unsqueeze_dim(0);
+        hidden.matmul(weight_t)
+    }
+
+    pub fn generate_greedy(
+        &self,
+        mel: Tensor<B, 3>,
+        start_tokens: Vec<u32>,
+        max_len: usize,
+        eot_token: u32,
+    ) -> Result<Vec<Vec<u32>>> {
+        let device = mel.device();
+        let [batch_size, _, _] = mel.dims();
+
+        // 1. Encode
+        let encoder_output = self.encoder.forward(mel, None);
+
+        // 2. Initialize decoder input
+        // [batch_size, start_len]
+        let start_tokens_i32: Vec<i32> = start_tokens.iter().map(|&t| t as i32).collect();
+        let mut tokens = Tensor::<B, 1, Int>::from_ints(&start_tokens_i32[..], &device)
+            .reshape([1, start_tokens.len()])
+            .repeat(&[batch_size, 1]);
+
+        // 3. Loop
+        for _ in 0..max_len {
+            // Forward pass to get logits
+            let logits = self.forward_decoder_logits(tokens.clone(), encoder_output.clone());
+
+            // Get logits for the last token: [batch, 1, vocab]
+            let seq_len = tokens.dims()[1];
+            let last_logits = logits.slice([0..batch_size, seq_len - 1..seq_len]);
+
+            // Greedy: argmax along vocab dimension (dim 2)
+            let next_token_logits = last_logits.argmax(2); // Returns [batch, 1, 1] (indices)
+            let next_token = next_token_logits.squeeze::<2>(); // [batch, 1]
+
+            // Concatenate
+            tokens = Tensor::cat(vec![tokens, next_token.clone()], 1);
+
+            // Check for EOT (simplified for batch=1)
+            // In a real implementation, we'd handle batch termination masks
+            if batch_size == 1 {
+                let token_data = next_token.into_data();
+                let token_scalar = token_data.as_slice::<i32>().unwrap()[0] as u32;
+                if token_scalar == eot_token {
+                    break;
+                }
+            }
+        }
+
+        // Convert tensors to Vec<Vec<u32>>
+        let mut results = Vec::with_capacity(batch_size);
+        let token_data = tokens.into_data();
+        let flat_tokens: Vec<u32> = token_data
+            .as_slice::<i32>()
+            .unwrap()
+            .iter()
+            .map(|&x| x as u32)
+            .collect();
+        let seq_len = flat_tokens.len() / batch_size;
+
+        for i in 0..batch_size {
+            let start = i * seq_len;
+            let end = start + seq_len;
+            results.push(flat_tokens[start..end].to_vec());
+        }
+
+        Ok(results)
     }
 }
 
@@ -317,31 +396,36 @@ impl<B: Backend> WhisperModel<B> {
 mod tests {
     use super::*;
     use burn::backend::NdArray;
+    use burn_ndarray::NdArrayDevice;
 
     type TestBackend = NdArray<f32>;
 
     #[test]
     fn test_model_creation() -> Result<()> {
-        let device = TestBackend::default();
+        let device = NdArrayDevice::default();
         let config = WhisperConfig::tiny_en();
-        let model = WhisperModel::<TestBackend>::new(config, &device);
-        
+        let model = WhisperModel::<NdArray>::new(config.clone(), &device);
+
         // Test that model creates successfully
-        assert_eq!(model.config.n_audio_state, 384);
-        assert_eq!(model.config.n_text_state, 384);
+        assert_eq!(model.config.0.n_audio_state, 384);
+        assert_eq!(model.config.0.n_text_state, 384);
         Ok(())
     }
 
     #[test]
     fn test_encoder_forward() -> Result<()> {
-        let device = TestBackend::default();
+        let device = NdArrayDevice::default();
         let config = WhisperConfig::tiny_en();
-        let encoder = WhisperEncoder::<TestBackend>::new(&config, &device);
-        
+        let encoder = WhisperEncoder::<NdArray>::new(&config, &device);
+
         // Test with dummy input [batch=1, time=100, mels=80]
-        let x = Tensor::random([1, 100, 80], burn::tensor::Distribution::Uniform(0.0..1.0), &device);
+        let x = Tensor::random(
+            [1, 100, 80],
+            burn::tensor::Distribution::Uniform(0.0, 1.0),
+            &device,
+        );
         let output = encoder.forward(x, None);
-        
+
         // Check output shape [batch=1, time=100, state=384]
         assert_eq!(output.dims(), [1, 100, 384]);
         Ok(())

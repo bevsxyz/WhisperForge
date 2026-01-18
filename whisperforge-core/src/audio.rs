@@ -1,9 +1,7 @@
 use anyhow::{anyhow, Result};
-use burn::{
-    tensor::{backend::Backend, Tensor},
-    tensor::activation::softmax,
-};
-use rubato::{Resampler, SincFixedIn, SincInterpolationType};
+use audioadapter_buffers::direct::SequentialSliceOfVecs;
+use burn::tensor::{backend::Backend, Tensor};
+use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, WindowFunction};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -49,22 +47,84 @@ impl AudioData {
             return Ok(self.clone());
         }
 
-        let resampler = SincFixedIn::new(
-            target_sample_rate as f64 / self.sample_rate as f64,
-            2.0,
-            SincInterpolationType::Linear,
-            1024,
-            2,
-        )
-        .map_err(|e| anyhow!("Failed to create resampler: {}", e))?;
+        let f_ratio = target_sample_rate as f64 / self.sample_rate as f64;
+        let params = SincInterpolationParameters {
+            sinc_len: 256,
+            f_cutoff: 0.95,
+            interpolation: rubato::SincInterpolationType::Cubic,
+            oversampling_factor: 256,
+            window: WindowFunction::BlackmanHarris2,
+        };
 
-        let audio_in = [&self.samples[..]];
-        let resampled = resampler
-            .process(&audio_in)
-            .map_err(|e| anyhow!("Resampling failed: {}", e))?;
+        // A reasonable chunk size in frames
+        let chunk_size = 1024;
+
+        let mut resampler =
+            Async::<f32>::new_sinc(f_ratio, 2.0, &params, chunk_size, 2, FixedAsync::Input)
+                .map_err(|e| anyhow!("Failed to create resampler: {}", e))?;
+
+        // Convert interleaved samples to multi-channel format for rubato
+        let frames_per_channel = self.samples.len() / self.channels as usize;
+        let mut input_channels: Vec<Vec<f32>> =
+            vec![Vec::with_capacity(frames_per_channel); self.channels as usize];
+
+        // Deinterleave samples: [L,R,L,R,...] -> [[L,L,...], [R,R,...]]
+        for (i, &sample) in self.samples.iter().enumerate() {
+            let channel = i % self.channels as usize;
+            input_channels[channel].push(sample);
+        }
+
+        let input_adapter =
+            SequentialSliceOfVecs::new(&input_channels, self.channels as usize, frames_per_channel)
+                .map_err(|e| anyhow!("Failed to create input adapter: {}", e))?;
+
+        // The resampler processes data in chunks. We need to know the output size.
+        let estimated_output_frames = (frames_per_channel as f64 * f_ratio) as usize;
+
+        let mut output_channels: Vec<Vec<f32>> =
+            vec![Vec::with_capacity(estimated_output_frames); self.channels as usize];
+        let mut output_adapter = SequentialSliceOfVecs::new_mut(
+            &mut output_channels,
+            self.channels as usize,
+            estimated_output_frames,
+        )
+        .map_err(|e| anyhow!("Failed to create output adapter: {}", e))?;
+
+        // Use an indexing helper struct for chunked processing
+        let mut indexing = rubato::Indexing {
+            input_offset: 0,
+            output_offset: 0,
+            active_channels_mask: None,
+            partial_len: None,
+        };
+
+        let mut input_frames_left = frames_per_channel;
+        let mut input_frames_next = resampler.input_frames_next();
+
+        // Loop over all full chunks.
+        while input_frames_left >= input_frames_next {
+            let (frames_read, frames_written) = resampler
+                .process_into_buffer(&input_adapter, &mut output_adapter, Some(&indexing))
+                .map_err(|e| anyhow!("Resampling failed: {}", e))?;
+
+            indexing.input_offset += frames_read;
+            indexing.output_offset += frames_written;
+            input_frames_left -= frames_read;
+            input_frames_next = resampler.input_frames_next();
+        }
+
+        // Interleave the output channels back into a single vector
+        let actual_output_frames = indexing.output_offset;
+        let mut output_samples = Vec::with_capacity(actual_output_frames * self.channels as usize);
+
+        for frame in 0..actual_output_frames {
+            for channel in 0..self.channels as usize {
+                output_samples.push(output_channels[channel][frame]);
+            }
+        }
 
         Ok(AudioData {
-            samples: resampled.into_iter().flatten().collect(),
+            samples: output_samples,
             sample_rate: target_sample_rate,
             channels: self.channels,
         })
@@ -77,8 +137,8 @@ impl AudioData {
 }
 
 pub fn load_wav_file<P: AsRef<Path>>(path: P) -> Result<AudioData> {
-    let reader = hound::WavReader::open(path)
-        .map_err(|e| anyhow!("Failed to open WAV file: {}", e))?;
+    let reader =
+        hound::WavReader::open(path).map_err(|e| anyhow!("Failed to open WAV file: {}", e))?;
 
     let spec = reader.spec();
     let samples: Vec<f32> = reader
@@ -94,7 +154,7 @@ pub fn load_wav_file<P: AsRef<Path>>(path: P) -> Result<AudioData> {
 }
 
 pub fn save_wav_file<P: AsRef<Path>>(audio: &AudioData, path: P) -> Result<()> {
-    use hound::{WavWriter, SampleFormat};
+    use hound::{SampleFormat, WavWriter};
 
     let spec = hound::WavSpec {
         channels: audio.channels,
@@ -103,15 +163,17 @@ pub fn save_wav_file<P: AsRef<Path>>(audio: &AudioData, path: P) -> Result<()> {
         sample_format: SampleFormat::Float,
     };
 
-    let mut writer = WavWriter::create(path, spec)
-        .map_err(|e| anyhow!("Failed to create WAV writer: {}", e))?;
+    let mut writer =
+        WavWriter::create(path, spec).map_err(|e| anyhow!("Failed to create WAV writer: {}", e))?;
 
     for &sample in &audio.samples {
-        writer.write_sample(sample)
+        writer
+            .write_sample(sample)
             .map_err(|e| anyhow!("Failed to write sample: {}", e))?;
     }
 
-    writer.finalize()
+    writer
+        .finalize()
         .map_err(|e| anyhow!("Failed to finalize WAV file: {}", e))?;
 
     Ok(())
@@ -138,7 +200,22 @@ pub fn compute_mel_spectrogram<B: Backend>(
     let stft = compute_stft(&audio_tensor, n_fft, hop_length);
 
     // Apply mel filter bank
-    let mel_spec = stft.matmul(mel_filters.transpose());
+    // stft: [1, n_frames, n_fft/2+1] (Rank 3)
+    // mel_filters: [n_freqs, n_mels] (Rank 2)
+    // Burn matmul supports broadcasting. We want [1, n_frames, n_mels]
+    // stft [batch, m, k] . mel_filters [k, n] -> [batch, m, n]
+    // stft dims: [batch, frames, freqs]
+    // mel_filters dims: [freqs, mels]
+    // matmul(stft, mel_filters) should work if mel_filters is broadcastable or 2D.
+    // The previous code had mel_filters.transpose() which made it [mels, freqs],
+    // and stft.matmul(...) expected rank 3 if stft is rank 3.
+    // In Burn, if LHS is rank 3 [B, M, K], and RHS is rank 2 [K, N], it typically works.
+
+    // Apply mel filter bank
+    // stft: [1, n_frames, n_fft/2+1] (Rank 3)
+    // mel_filters: [n_freqs, n_mels] (Rank 2) -> needs to be [1, n_freqs, n_mels] for matmul
+    let mel_filters_3d = mel_filters.unsqueeze_dim(0); // Shape becomes [1, n_freqs, n_mels]
+    let mel_spec = stft.matmul(mel_filters_3d); // Result is [1, n_frames, n_mels]
 
     // Log compression
     let log_mel_spec = mel_spec.log() + 1e-6;
@@ -150,7 +227,7 @@ pub fn compute_mel_spectrogram<B: Backend>(
 fn create_mel_filter_bank<B: Backend>(
     n_freqs: usize,
     n_mels: usize,
-    sample_rate: u32,
+    _sample_rate: u32,
     device: &B::Device,
 ) -> Tensor<B, 2> {
     // Simplified mel filter bank creation
@@ -173,13 +250,14 @@ fn compute_stft<B: Backend>(audio: &Tensor<B, 2>, n_fft: usize, hop_length: usiz
     Tensor::random(
         [batch_size, n_frames, n_fft / 2 + 1],
         burn::tensor::Distribution::Normal(0.0, 1.0),
-        audio.device(),
+        &audio.device(),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use burn_ndarray::NdArrayDevice;
 
     #[test]
     fn test_audio_data_creation() {
@@ -204,7 +282,7 @@ mod tests {
             400,
             160,
             80,
-            &burn::backend::NdArrayDevice::default(),
+            &NdArrayDevice::default(),
         );
         assert!(result.is_ok());
     }

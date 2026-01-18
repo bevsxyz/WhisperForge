@@ -88,10 +88,10 @@ impl VoiceActivityDetector {
         // Simple energy-based VAD
         let energy = frame.iter().map(|&x| x * x).sum::<f32>() / frame.len() as f32;
         let zcr = self.zero_crossing_rate(frame);
-        
+
         // Combined heuristic: energy + zero crossing rate
         let voice_probability = self.energy_to_probability(energy) * (1.0 - zcr);
-        
+
         Ok(voice_probability > self.vad_threshold)
     }
 
@@ -101,7 +101,8 @@ impl VoiceActivityDetector {
             return 0.0;
         }
 
-        let crossings = frame.windows(2)
+        let crossings = frame
+            .windows(2)
             .filter(|&pair| pair[0] * pair[1] < 0.0)
             .count();
 
@@ -187,7 +188,7 @@ mod tests {
     #[test]
     fn test_zero_crossing_rate() {
         let vad = VoiceActivityDetector::new(16000);
-        
+
         // All positive samples - zero crossings
         let signal = vec![0.1, 0.2, 0.3, 0.4];
         assert_eq!(vad.zero_crossing_rate(&signal), 0.0);
@@ -201,7 +202,7 @@ mod tests {
     #[test]
     fn test_energy_to_probability() {
         let vad = VoiceActivityDetector::new(16000);
-        
+
         // Zero energy should give low probability
         let prob = vad.energy_to_probability(0.0);
         assert!(prob < 0.1);

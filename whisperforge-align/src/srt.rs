@@ -88,7 +88,7 @@ impl SrtWriter {
     /// Convert all entries to SRT format string
     pub fn to_string(&self) -> String {
         let mut srt = String::new();
-        
+
         for (i, entry) in self.entries.iter().enumerate() {
             srt.push_str(&format!(
                 "{}\n{} --> {}\n{}\n\n",
@@ -121,18 +121,14 @@ impl SrtWriter {
                 let chunk_start = if i == 0 {
                     segment.start_time
                 } else {
-                    segment.start_time + (i * words_per_line * segment.word_duration)
+                    segment.start_time
+                        + ((i as f64) * (words_per_line as f64) * segment.word_duration)
                 };
 
-                let chunk_end = chunk_start + (chunk.len() * segment.word_duration);
+                let chunk_end = chunk_start + ((chunk.len() as f64) * segment.word_duration);
 
                 let text = chunk.join(" ");
-                writer.add_entry(SrtEntry::new(
-                    sequence,
-                    chunk_start,
-                    chunk_end,
-                    text,
-                ));
+                writer.add_entry(SrtEntry::new(sequence, chunk_start, chunk_end, text));
                 sequence += 1;
             }
         }
@@ -215,8 +211,8 @@ mod tests {
     #[test]
     fn test_transcribed_segment() {
         let words = vec!["Hello".to_string(), "world".to_string()];
-        let segment = TranscribedSegment::new(10.0, 15.0, words);
-        
+        let segment = TranscribedSegment::new(10.0, 15.0, words.clone());
+
         assert_eq!(segment.start_time, 10.0);
         assert_eq!(segment.end_time, 15.0);
         assert_eq!(segment.word_duration, 2.5); // 5 seconds / 2 words
