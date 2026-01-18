@@ -1,6 +1,17 @@
 [package]
 name = "whisperforge-align"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+# Workspace dependencies
+earshot = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+# Audio processing
+rubato = { workspace = true }
+
+# Core dependencies
+whisperforge-core = { path = "../whisperforge-core" }
