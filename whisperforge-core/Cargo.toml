@@ -1,0 +1,12 @@
+[package]
+name = "whisperforge-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+burn = { workspace = true, features = ["std", "ndarray", "wgpu"] }
+serde = { workspace = true }
+anyhow = { workspace = true }
+tokenizers = "0.19"
+rubato = { workspace = true }
+hound = { workspace = true }
