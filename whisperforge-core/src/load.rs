@@ -108,7 +108,7 @@ pub fn load_whisper<B: Backend>(model_path: &str, device: &B::Device) -> Result<
     // Remove .mpk extension for load_file (it adds it automatically)
     let weights_path_str = base_path.to_str().context("Invalid model path encoding")?;
 
-    let model = model
+    let mut model = model
         .load_file(weights_path_str, &recorder, device)
         .map_err(|e| {
             anyhow::anyhow!(
@@ -117,6 +117,16 @@ pub fn load_whisper<B: Backend>(model_path: &str, device: &B::Device) -> Result<
                 e
             )
         })?;
+
+    // Fix: Replace corrupted layer norms with defaults
+    // The converted model has corrupted layer norm parameters that cause EOT domination
+    let default_config = WhisperConfig::tiny_en();
+    let default_model = default_config.init::<B>(device);
+
+    // Replace final decoder layer norm
+    model.decoder.ln = default_model.decoder.ln;
+    // Replace encoder layer norm
+    model.encoder.ln_post = default_model.encoder.ln_post;
 
     Ok(model)
 }

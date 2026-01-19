@@ -20,6 +20,10 @@ struct Args {
     /// Output file path (e.g., models/whisper-tiny.mpk)
     #[arg(long)]
     output: String,
+
+    /// Local safetensors file path (optional, if not provided will download)
+    #[arg(long)]
+    local_safetensors: Option<String>,
 }
 
 type B = NdArray<f32>;
@@ -29,25 +33,49 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let device = NdArrayDevice::default();
 
-    println!("Downloading model: {}", args.model_id);
-    let api = Api::new()?;
-    let repo = api.repo(Repo::new(args.model_id.clone(), RepoType::Model));
-
-    // Download tokenizer first to ensure it exists
-    println!("Downloading tokenizer...");
-    let tokenizer_path = repo.get("tokenizer.json").await?;
     let output_path = std::path::Path::new(&args.output);
     let tokenizer_output = output_path.with_file_name(format!(
         "{}-tokenizer.json",
         output_path.file_stem().unwrap().to_string_lossy()
     ));
-    std::fs::copy(&tokenizer_path, &tokenizer_output)?;
-    println!("Saved tokenizer to: {:?}", tokenizer_output);
 
-    let weights_path = repo.get("model.safetensors").await?;
+    if let Some(local_path) = &args.local_safetensors {
+        // Using local file - check if tokenizer exists locally
+        let local_tokenizer = std::path::Path::new(local_path).with_file_name("tokenizer.json");
+        if local_tokenizer.exists() {
+            std::fs::copy(&local_tokenizer, &tokenizer_output)?;
+            println!("Copied local tokenizer to: {:?}", tokenizer_output);
+        } else {
+            println!("Warning: No local tokenizer found, skipping tokenizer copy");
+        }
+    } else {
+        // Download from HF
+        println!("Downloading model: {}", args.model_id);
+        let api = Api::new()?;
+        let repo = api.repo(Repo::new(args.model_id.clone(), RepoType::Model));
 
-    println!("Loading weights from: {:?}", weights_path);
-    let tensor_data = std::fs::read(&weights_path)?;
+        // Download tokenizer first to ensure it exists
+        println!("Downloading tokenizer...");
+        let tokenizer_path = repo.get("tokenizer.json").await?;
+        std::fs::copy(&tokenizer_path, &tokenizer_output)?;
+        println!("Saved tokenizer to: {:?}", tokenizer_output);
+    }
+
+    let (weights_path, tensor_data) = if let Some(local_path) = &args.local_safetensors {
+        println!("Using local safetensors file: {}", local_path);
+        let data = std::fs::read(local_path)?;
+        (std::path::PathBuf::from(local_path), data)
+    } else {
+        println!("Downloading model: {}", args.model_id);
+        let api = Api::new()?;
+        let repo = api.repo(Repo::new(args.model_id.clone(), RepoType::Model));
+
+        let path = repo.get("model.safetensors").await?;
+        println!("Loading downloaded weights from: {:?}", path);
+        let data = std::fs::read(&path)?;
+        (path, data)
+    };
+
     let tensors = SafeTensors::deserialize(&tensor_data)?;
 
     // List available tensors for debugging

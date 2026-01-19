@@ -11,7 +11,7 @@ use whisperforge_core::{Whisper, audio, load_whisper};
 #[command(about = "A fast Whisper transcription tool in Rust")]
 struct Args {
     #[arg(short, long)]
-    audio_file: String,
+    audio_file: Option<String>,
 
     #[arg(short, long, default_value = "tiny_en_converted")]
     model: String,
@@ -21,6 +21,10 @@ struct Args {
 
     #[arg(short, long)]
     output: Option<String>,
+
+    /// Debug inference with different encoder inputs
+    #[arg(long)]
+    debug_inference: bool,
 }
 
 type Backend = NdArray<f32>;
@@ -29,11 +33,17 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     println!("WhisperForge v0.1.0");
+
+    let audio_file = args
+        .audio_file
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Audio file is required (use --audio-file)"))?;
+
     println!("Loading model: {}", args.model);
 
     // Load audio
-    println!("Loading audio: {}", args.audio_file);
-    let audio_data = audio::load_wav_file(&args.audio_file)?;
+    println!("Loading audio: {}", audio_file);
+    let audio_data = audio::load_wav_file(audio_file)?;
     let processed_audio = audio_data.to_16khz_mono()?;
 
     println!(
@@ -110,11 +120,24 @@ fn main() -> Result<()> {
     let encoder_output = model.forward_encoder(mel_features);
     println!("Encoder output shape: {:?}", encoder_output.dims());
 
+    // Check encoder output statistics
+    let enc_data = encoder_output.to_data();
+    let enc_vec: Vec<f32> = enc_data.to_vec().unwrap();
+    let enc_min = enc_vec.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+    let enc_max = enc_vec.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    let enc_mean = enc_vec.iter().sum::<f32>() / enc_vec.len() as f32;
+
+    println!(
+        "Encoder output stats: Min={:.4}, Max={:.4}, Mean={:.4}",
+        enc_min, enc_max, enc_mean
+    );
+
     // Start with initial tokens
     let mut tokens: Vec<u32> = vec![sot, en, transcribe, no_timestamps];
+    println!("Initial tokens: {:?}", tokens);
     let max_tokens = 224; // Max decoder context is 448, leave room
 
-    for _ in 0..max_tokens {
+    for step in 0..max_tokens {
         // Create token tensor
         let token_tensor: Tensor<Backend, 2, Int> = Tensor::from_data(
             burn::tensor::TensorData::new(
@@ -127,8 +150,6 @@ fn main() -> Result<()> {
         // Get logits
         let logits = model.forward_decoder(token_tensor, encoder_output.clone());
         let logits_shape = logits.dims();
-        // println!("Logits shape: {:?}", logits_shape);
-        // std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
         // Get last token's logits and find argmax
         let batch_size = logits_shape[0];
@@ -138,9 +159,61 @@ fn main() -> Result<()> {
         // Shape is [1, 1, 51864] -> squeeze sequence dimension to get [1, 51864]
         let last_logits = last_logits.squeeze::<1>();
 
-        let next_token = last_logits.argmax(0).into_scalar() as u32;
+        // Debug: Analyze logits for first few steps
+        if step < 5 {
+            let logits_data = last_logits.to_data();
+            let logits_vec: Vec<f32> = logits_data.to_vec().unwrap();
 
-        if next_token == eot {
+            // Find top 5 tokens and their probabilities
+            let mut token_probs: Vec<(usize, f32)> = logits_vec
+                .iter()
+                .enumerate()
+                .map(|(i, &prob)| (i, prob))
+                .collect();
+            token_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            println!("\nStep {} logits analysis:", step);
+            println!("  Current tokens: {:?}", &tokens);
+            println!("  Top 5 tokens and probs:");
+            for (i, (token_id, prob)) in token_probs.iter().take(5).enumerate() {
+                let token_str = tokenizer
+                    .decode(&[*token_id as u32], false)
+                    .unwrap_or("<?>".to_string());
+                println!(
+                    "    {}: token={} ({}) prob={:.4}",
+                    i + 1,
+                    token_id,
+                    token_str,
+                    prob
+                );
+            }
+
+            // Check specific tokens
+            let eot_prob = logits_vec[eot as usize];
+            let transcribe_prob = logits_vec[transcribe as usize];
+            println!("  EOT ({}): prob={:.4}", eot, eot_prob);
+            println!("  TRANSCRIBE ({}): prob={:.4}", transcribe, transcribe_prob);
+        }
+
+        let next_token = last_logits.argmax(0).into_scalar() as u32;
+        println!(
+            "Step {}: selected token {} ({})",
+            step,
+            next_token,
+            tokenizer
+                .decode(&[next_token], false)
+                .unwrap_or("<?>".to_string())
+        );
+
+        // For debugging: allow a few steps even with EOT to see if model can generate content
+        if next_token == eot && step > 2 {
+            println!("EOT detected after {} steps, stopping generation", step);
+            break;
+        }
+
+        // Safety check: prevent infinite loops
+        if tokens.len() >= 50 {
+            println!("Reached max token limit (50), stopping generation");
             break;
         }
 
