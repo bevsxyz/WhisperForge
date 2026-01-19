@@ -2,9 +2,11 @@ use anyhow::Result;
 use burn::tensor::{backend::Backend, Tensor};
 
 pub mod audio;
+pub mod load;
 pub mod model;
 
-pub use model::{WhisperConfig, WhisperModel};
+pub use load::{load_config, load_whisper};
+pub use model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
 
 #[derive(Debug, Clone)]
 pub struct TranscriptionSegment {

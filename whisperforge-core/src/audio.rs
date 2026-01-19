@@ -220,8 +220,9 @@ pub fn compute_mel_spectrogram<B: Backend>(
     // Log compression
     let log_mel_spec = mel_spec.log() + 1e-6;
 
-    // Add batch dimension [1, n_mels, time]
-    Ok(log_mel_spec.unsqueeze_dim(0))
+    // Already has batch dimension [1, n_frames, n_mels]
+    // Transpose to [1, n_mels, n_frames] for Whisper input format
+    Ok(log_mel_spec.swap_dims(1, 2))
 }
 
 fn create_mel_filter_bank<B: Backend>(

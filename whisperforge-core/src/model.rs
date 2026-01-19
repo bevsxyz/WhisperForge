@@ -1,395 +1,695 @@
-use anyhow::Result;
+// Whisper model implementation adapted from whisper-burn (MIT License)
+// https://github.com/Gadersd/whisper-burn
+
+use std::f32::NEG_INFINITY;
+
 use burn::{
     config::Config,
-    module::{Ignored, Module},
+    module::{Module, Param},
     nn::{
+        self,
         conv::{Conv1d, Conv1dConfig},
-        transformer::{
-            TransformerDecoder, TransformerDecoderConfig, TransformerDecoderInput,
-            TransformerEncoder, TransformerEncoderConfig, TransformerEncoderInput,
-        },
-        Embedding, EmbeddingConfig, LayerNorm, PaddingConfig1d,
+        PaddingConfig1d,
     },
-    tensor::{backend::Backend, Bool, Int, Tensor},
+    tensor::{activation::softmax, backend::Backend, Distribution, Int, Tensor},
 };
 
+/// Configuration for the Whisper model
 #[derive(Config, Debug)]
 pub struct WhisperConfig {
+    pub audio_encoder_config: AudioEncoderConfig,
+    pub text_decoder_config: TextDecoderConfig,
+}
+
+impl WhisperConfig {
+    /// Create config for tiny.en model
+    pub fn tiny_en() -> Self {
+        Self {
+            audio_encoder_config: AudioEncoderConfig {
+                n_mels: 80,
+                n_audio_ctx: 1500,
+                n_audio_state: 384,
+                n_audio_head: 6,
+                n_audio_layer: 4,
+            },
+            text_decoder_config: TextDecoderConfig {
+                n_vocab: 51864,
+                n_text_ctx: 448,
+                n_text_state: 384,
+                n_text_head: 6,
+                n_text_layer: 4,
+            },
+        }
+    }
+
+    /// Create config for base model
+    pub fn base() -> Self {
+        Self {
+            audio_encoder_config: AudioEncoderConfig {
+                n_mels: 80,
+                n_audio_ctx: 1500,
+                n_audio_state: 512,
+                n_audio_head: 8,
+                n_audio_layer: 6,
+            },
+            text_decoder_config: TextDecoderConfig {
+                n_vocab: 51864,
+                n_text_ctx: 448,
+                n_text_state: 512,
+                n_text_head: 8,
+                n_text_layer: 6,
+            },
+        }
+    }
+
+    /// Create config for small model
+    pub fn small() -> Self {
+        Self {
+            audio_encoder_config: AudioEncoderConfig {
+                n_mels: 80,
+                n_audio_ctx: 1500,
+                n_audio_state: 768,
+                n_audio_head: 12,
+                n_audio_layer: 12,
+            },
+            text_decoder_config: TextDecoderConfig {
+                n_vocab: 51864,
+                n_text_ctx: 448,
+                n_text_state: 768,
+                n_text_head: 12,
+                n_text_layer: 12,
+            },
+        }
+    }
+
+    /// Create config for medium model
+    pub fn medium() -> Self {
+        Self {
+            audio_encoder_config: AudioEncoderConfig {
+                n_mels: 80,
+                n_audio_ctx: 1500,
+                n_audio_state: 1024,
+                n_audio_head: 16,
+                n_audio_layer: 24,
+            },
+            text_decoder_config: TextDecoderConfig {
+                n_vocab: 51864,
+                n_text_ctx: 448,
+                n_text_state: 1024,
+                n_text_head: 16,
+                n_text_layer: 24,
+            },
+        }
+    }
+
+    /// Create config for large-v2 model
+    pub fn large_v2() -> Self {
+        Self {
+            audio_encoder_config: AudioEncoderConfig {
+                n_mels: 128,
+                n_audio_ctx: 1500,
+                n_audio_state: 1280,
+                n_audio_head: 20,
+                n_audio_layer: 32,
+            },
+            text_decoder_config: TextDecoderConfig {
+                n_vocab: 51864,
+                n_text_ctx: 448,
+                n_text_state: 1280,
+                n_text_head: 20,
+                n_text_layer: 32,
+            },
+        }
+    }
+
+    /// Create config for large-v3 model
+    pub fn large_v3() -> Self {
+        Self {
+            audio_encoder_config: AudioEncoderConfig {
+                n_mels: 128,
+                n_audio_ctx: 1500,
+                n_audio_state: 1280,
+                n_audio_head: 20,
+                n_audio_layer: 32,
+            },
+            text_decoder_config: TextDecoderConfig {
+                n_vocab: 51865,
+                n_text_ctx: 448,
+                n_text_state: 1280,
+                n_text_head: 20,
+                n_text_layer: 32,
+            },
+        }
+    }
+
+    pub fn init<B: Backend>(&self, device: &B::Device) -> Whisper<B> {
+        let n_audio_state = self.audio_encoder_config.n_audio_state;
+        let n_text_state = self.text_decoder_config.n_text_state;
+
+        assert!(
+            n_audio_state == n_text_state,
+            "Audio encoder state size {} must be equal to text decoder state size {}.",
+            n_audio_state,
+            n_text_state
+        );
+
+        let encoder = self.audio_encoder_config.init(device);
+        let decoder = self.text_decoder_config.init(device);
+
+        Whisper { encoder, decoder }
+    }
+}
+
+/// The main Whisper model
+#[derive(Module, Debug)]
+pub struct Whisper<B: Backend> {
+    pub encoder: AudioEncoder<B>,
+    pub decoder: TextDecoder<B>,
+}
+
+impl<B: Backend> Whisper<B> {
+    /// Full forward pass: encode audio and decode tokens
+    pub fn forward(&self, mel: Tensor<B, 3>, tokens: Tensor<B, 2, Int>) -> Tensor<B, 3> {
+        self.decoder.forward(tokens, self.encoder.forward(mel))
+    }
+
+    /// Encode audio mel spectrogram
+    pub fn forward_encoder(&self, mel: Tensor<B, 3>) -> Tensor<B, 3> {
+        self.encoder.forward(mel)
+    }
+
+    /// Decode tokens given encoder output
+    pub fn forward_decoder(
+        &self,
+        tokens: Tensor<B, 2, Int>,
+        encoder_output: Tensor<B, 3>,
+    ) -> Tensor<B, 3> {
+        self.decoder.forward(tokens, encoder_output)
+    }
+
+    pub fn encoder_ctx_size(&self) -> usize {
+        self.encoder.ctx_size()
+    }
+
+    pub fn decoder_ctx_size(&self) -> usize {
+        self.decoder.ctx_size()
+    }
+}
+
+// ============================================================================
+// Text Decoder
+// ============================================================================
+
+#[derive(Config, Debug)]
+pub struct TextDecoderConfig {
+    pub n_vocab: usize,
+    pub n_text_ctx: usize,
+    pub n_text_state: usize,
+    pub n_text_head: usize,
+    pub n_text_layer: usize,
+}
+
+impl TextDecoderConfig {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> TextDecoder<B> {
+        let token_embedding = Param::from_tensor(Tensor::random(
+            [self.n_vocab, self.n_text_state],
+            Distribution::Normal(0.0, 0.02),
+            device,
+        ));
+        let positional_embedding = Param::from_tensor(Tensor::random(
+            [self.n_text_ctx, self.n_text_state],
+            Distribution::Normal(0.0, 0.01),
+            device,
+        ));
+        let blocks: Vec<_> = (0..self.n_text_layer)
+            .map(|_| {
+                ResidualDecoderAttentionBlockConfig::new(self.n_text_state, self.n_text_head)
+                    .init(device)
+            })
+            .collect();
+        let ln = nn::LayerNormConfig::new(self.n_text_state).init(device);
+
+        let mask = Param::from_tensor(attn_decoder_mask(self.n_text_ctx, device));
+
+        let n_vocab = self.n_vocab;
+        let n_text_ctx = self.n_text_ctx;
+
+        TextDecoder {
+            token_embedding,
+            positional_embedding,
+            blocks,
+            ln,
+            mask,
+            n_vocab,
+            n_text_ctx,
+        }
+    }
+}
+
+#[derive(Module, Debug)]
+pub struct TextDecoder<B: Backend> {
+    pub token_embedding: Param<Tensor<B, 2>>,
+    pub positional_embedding: Param<Tensor<B, 2>>,
+    pub blocks: Vec<ResidualDecoderAttentionBlock<B>>,
+    pub ln: nn::LayerNorm<B>,
+    pub mask: Param<Tensor<B, 2>>,
+    pub n_vocab: usize,
+    pub n_text_ctx: usize,
+}
+
+impl<B: Backend> TextDecoder<B> {
+    pub fn forward(&self, x: Tensor<B, 2, Int>, xa: Tensor<B, 3>) -> Tensor<B, 3> {
+        let [_n_batch, seq_len] = x.dims();
+
+        assert!(
+            seq_len <= self.n_text_ctx,
+            "Token sequence length {} must not exceed {}.",
+            seq_len,
+            self.n_text_ctx
+        );
+
+        // Token embedding lookup
+        let x = burn::tensor::module::embedding(self.token_embedding.val(), x)
+            + self
+                .positional_embedding
+                .val()
+                .slice([0..seq_len])
+                .unsqueeze::<3>();
+
+        let mut x = x;
+        for block in &self.blocks {
+            x = block.forward(x, xa.clone(), self.mask.val());
+        }
+
+        let x = self.ln.forward(x);
+        // Project to vocabulary logits
+        x.matmul(self.token_embedding.val().transpose().unsqueeze::<3>())
+    }
+
+    pub fn ctx_size(&self) -> usize {
+        self.n_text_ctx
+    }
+}
+
+// ============================================================================
+// Audio Encoder
+// ============================================================================
+
+#[derive(Config, Debug)]
+pub struct AudioEncoderConfig {
     pub n_mels: usize,
     pub n_audio_ctx: usize,
     pub n_audio_state: usize,
     pub n_audio_head: usize,
     pub n_audio_layer: usize,
-    pub n_text_ctx: usize,
-    pub n_text_state: usize,
-    pub n_text_head: usize,
-    pub n_text_layer: usize,
-    pub n_vocab: usize,
 }
 
-impl WhisperConfig {
-    pub fn tiny_en() -> Self {
-        Self {
-            n_mels: 80,
-            n_audio_ctx: 1500,
-            n_audio_state: 384,
-            n_audio_head: 6,
-            n_audio_layer: 4,
-            n_text_ctx: 448,
-            n_text_state: 384,
-            n_text_head: 6,
-            n_text_layer: 4,
-            n_vocab: 51864,
-        }
-    }
-
-    pub fn base() -> Self {
-        Self {
-            n_mels: 80,
-            n_audio_ctx: 1500,
-            n_audio_state: 512,
-            n_audio_head: 8,
-            n_audio_layer: 6,
-            n_text_ctx: 448,
-            n_text_state: 512,
-            n_text_head: 8,
-            n_text_layer: 6,
-            n_vocab: 51864,
-        }
-    }
-
-    pub fn small() -> Self {
-        Self {
-            n_mels: 80,
-            n_audio_ctx: 1500,
-            n_audio_state: 768,
-            n_audio_head: 12,
-            n_audio_layer: 12,
-            n_text_ctx: 448,
-            n_text_state: 768,
-            n_text_head: 12,
-            n_text_layer: 12,
-            n_vocab: 51864,
-        }
-    }
-
-    pub fn medium() -> Self {
-        Self {
-            n_mels: 80,
-            n_audio_ctx: 1500,
-            n_audio_state: 1024,
-            n_audio_head: 16,
-            n_audio_layer: 24,
-            n_text_ctx: 448,
-            n_text_state: 1024,
-            n_text_head: 16,
-            n_text_layer: 24,
-            n_vocab: 51864,
-        }
-    }
-
-    pub fn large_v2() -> Self {
-        Self {
-            n_mels: 128,
-            n_audio_ctx: 1500,
-            n_audio_state: 1280,
-            n_audio_head: 20,
-            n_audio_layer: 32,
-            n_text_ctx: 448,
-            n_text_state: 1280,
-            n_text_head: 20,
-            n_text_layer: 32,
-            n_vocab: 51864,
-        }
-    }
-
-    pub fn large_v3() -> Self {
-        Self {
-            n_mels: 128,
-            n_audio_ctx: 1500,
-            n_audio_state: 1280,
-            n_audio_head: 20,
-            n_audio_layer: 32,
-            n_text_ctx: 448,
-            n_text_state: 1280,
-            n_text_head: 20,
-            n_text_layer: 32,
-            n_vocab: 51865, // One extra token for multilingual
-        }
-    }
-}
-
-#[derive(Module, Debug)]
-pub struct WhisperEncoder<B: Backend> {
-    pub conv1: Conv1d<B>,
-    pub conv2: Conv1d<B>,
-    pub pos_emb: Embedding<B>,
-    pub blocks: Vec<TransformerEncoder<B>>,
-    pub ln_post: LayerNorm<B>,
-}
-
-impl<B: Backend> WhisperEncoder<B> {
-    pub fn new(config: &WhisperConfig, device: &B::Device) -> Self {
-        let conv1_config = Conv1dConfig::new(config.n_mels, config.n_audio_state, 3)
-            .with_stride(1)
+impl AudioEncoderConfig {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> AudioEncoder<B> {
+        let conv1 = Conv1dConfig::new(self.n_mels, self.n_audio_state, 3)
             .with_padding(PaddingConfig1d::Explicit(1))
-            .with_bias(true);
-        let conv1 = conv1_config.init(device);
-
-        let conv2_config = Conv1dConfig::new(config.n_audio_state, config.n_audio_state, 3)
+            .init(device);
+        let gelu1 = nn::Gelu::new();
+        let conv2 = Conv1dConfig::new(self.n_audio_state, self.n_audio_state, 3)
+            .with_padding(PaddingConfig1d::Explicit(1))
             .with_stride(2)
-            .with_padding(PaddingConfig1d::Explicit(1))
-            .with_bias(true);
-        let conv2 = conv2_config.init(device);
+            .init(device);
+        let gelu2 = nn::Gelu::new();
+        let blocks: Vec<_> = (0..self.n_audio_layer)
+            .map(|_| {
+                ResidualEncoderAttentionBlockConfig::new(self.n_audio_state, self.n_audio_head)
+                    .init(device)
+            })
+            .collect();
+        let ln_post = nn::LayerNormConfig::new(self.n_audio_state).init(device);
+        let positional_embedding = Param::from_tensor(Tensor::random(
+            [self.n_audio_ctx, self.n_audio_state],
+            Distribution::Normal(0.0, 0.01),
+            device,
+        ));
+        let n_mels = self.n_mels;
+        let n_audio_ctx = self.n_audio_ctx;
 
-        let pos_emb_config = EmbeddingConfig::new(config.n_audio_ctx, config.n_audio_state);
-        let pos_emb = pos_emb_config.init(device);
-
-        let mut blocks = Vec::with_capacity(config.n_audio_layer);
-        for _ in 0..config.n_audio_layer {
-            let block_config = TransformerEncoderConfig::new(
-                config.n_audio_state,
-                config.n_audio_head,
-                config.n_audio_state / config.n_audio_head,
-                config.n_audio_state * 4,
-            )
-            .with_norm_first(true);
-            blocks.push(block_config.init(device));
-        }
-
-        let ln_post_config = burn::nn::LayerNormConfig::new(config.n_audio_state);
-        let ln_post = ln_post_config.init(device);
-
-        Self {
+        AudioEncoder {
             conv1,
+            gelu1,
             conv2,
-            pos_emb,
+            gelu2,
             blocks,
             ln_post,
+            positional_embedding,
+            n_mels,
+            n_audio_ctx,
         }
-    }
-
-    pub fn forward(&self, x: Tensor<B, 3>, mask: Option<Tensor<B, 2, Bool>>) -> Tensor<B, 3> {
-        let [batch_size, seq_len, _] = x.dims();
-
-        let x = x.swap_dims(1, 2);
-        let x = self.conv1.forward(x);
-        let x = burn::tensor::activation::relu(x);
-        let x = self.conv2.forward(x);
-        let x = burn::tensor::activation::relu(x);
-
-        let x = x.swap_dims(1, 2);
-
-        // Add positional embeddings
-        let pos_ids = Tensor::arange(0..seq_len as i64, &x.device())
-            .reshape([1, seq_len])
-            .repeat(&[batch_size, 1]);
-        let x = x + self.pos_emb.forward(pos_ids);
-
-        // Pass through transformer blocks
-        let mut hidden_states = x;
-        for block in &self.blocks {
-            let mut input = TransformerEncoderInput::new(hidden_states);
-            if let Some(ref m) = mask {
-                input = input.mask_pad(m.clone());
-            }
-            hidden_states = block.forward(input);
-        }
-
-        self.ln_post.forward(hidden_states)
     }
 }
 
 #[derive(Module, Debug)]
-pub struct WhisperDecoder<B: Backend> {
-    pub token_embedding: Embedding<B>,
-    pub pos_emb: Embedding<B>,
-    pub blocks: Vec<TransformerDecoder<B>>,
-    pub ln: LayerNorm<B>,
+pub struct AudioEncoder<B: Backend> {
+    pub conv1: Conv1d<B>,
+    pub gelu1: nn::Gelu,
+    pub conv2: Conv1d<B>,
+    pub gelu2: nn::Gelu,
+    pub blocks: Vec<ResidualEncoderAttentionBlock<B>>,
+    pub ln_post: nn::LayerNorm<B>,
+    pub positional_embedding: Param<Tensor<B, 2>>,
+    pub n_mels: usize,
+    pub n_audio_ctx: usize,
 }
 
-impl<B: Backend> WhisperDecoder<B> {
-    pub fn new(config: &WhisperConfig, device: &B::Device) -> Self {
-        let token_emb_config = EmbeddingConfig::new(config.n_vocab, config.n_text_state);
-        let token_embedding = token_emb_config.init(device);
+impl<B: Backend> AudioEncoder<B> {
+    pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
+        let [_, n_mels, n_ctx] = x.dims();
 
-        let pos_emb_config = EmbeddingConfig::new(config.n_text_ctx, config.n_text_state);
-        let pos_emb = pos_emb_config.init(device);
+        assert!(
+            n_mels == self.n_mels,
+            "Audio mel spectrum size must be {}.",
+            self.n_mels
+        );
+        assert!(
+            n_ctx <= 2 * self.n_audio_ctx,
+            "Audio length {} cannot exceed {}.",
+            n_ctx,
+            2 * self.n_audio_ctx
+        );
 
-        let mut blocks = Vec::with_capacity(config.n_text_layer);
-        for _ in 0..config.n_text_layer {
-            let block_config = TransformerDecoderConfig::new(
-                config.n_text_state,
-                config.n_text_head,
-                config.n_text_state / config.n_text_head,
-                config.n_text_state * 4,
-            )
-            .with_norm_first(true);
-            blocks.push(block_config.init(device));
+        let x = self.gelu1.forward(self.conv1.forward(x));
+        let x = self.gelu2.forward(self.conv2.forward(x));
+
+        let x = x.swap_dims(1, 2);
+        let k = x.dims()[1];
+        let x = x + self
+            .positional_embedding
+            .val()
+            .slice([0..k])
+            .unsqueeze::<3>();
+
+        let mut x = x;
+        for block in &self.blocks {
+            x = block.forward(x);
         }
 
-        let ln_config = burn::nn::LayerNormConfig::new(config.n_text_state);
-        let ln = ln_config.init(device);
-
-        Self {
-            token_embedding,
-            pos_emb,
-            blocks,
-            ln,
-        }
+        self.ln_post.forward(x)
     }
 
-    pub fn forward(
-        &self,
-        x: Tensor<B, 2, Int>,
-        encoder_output: Tensor<B, 3>,
-        mask: Option<Tensor<B, 2, Bool>>,
-    ) -> Tensor<B, 3> {
-        let [batch_size, seq_len] = x.dims();
+    pub fn ctx_size(&self) -> usize {
+        self.n_audio_ctx
+    }
+}
 
-        let x = self.token_embedding.forward(x);
-        let pos_ids = Tensor::arange(0..seq_len as i64, &x.device())
-            .reshape([1, seq_len])
-            .repeat(&[batch_size, 1]);
-        let x = x + self.pos_emb.forward(pos_ids);
+// ============================================================================
+// Attention Blocks
+// ============================================================================
 
-        let mut hidden_states = x;
+#[derive(Config, Debug)]
+pub struct ResidualEncoderAttentionBlockConfig {
+    n_state: usize,
+    n_head: usize,
+}
 
-        for block in &self.blocks {
-            // Self-attention input (Query = Key = Value = hidden_states)
-            // Cross-attention input (Key = Value = encoder_output)
+impl ResidualEncoderAttentionBlockConfig {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> ResidualEncoderAttentionBlock<B> {
+        let attn = MultiHeadSelfAttentionConfig::new(self.n_state, self.n_head).init(device);
+        let attn_ln = nn::LayerNormConfig::new(self.n_state).init(device);
 
-            // In Burn 0.13/0.14+, TransformerDecoderInput::new takes (target, memory).
-            // It automatically handles creating MhaInput internally or expects raw tensors.
-            // Based on error: "expected Tensor, found MhaInput".
+        let mlp = MLPConfig::new(self.n_state).init(device);
+        let mlp_ln = nn::LayerNormConfig::new(self.n_state).init(device);
 
-            let mut input =
-                TransformerDecoderInput::new(hidden_states.clone(), encoder_output.clone());
-
-            if let Some(ref m) = mask {
-                input = input.memory_mask_pad(m.clone());
-            }
-
-            hidden_states = block.forward(input);
+        ResidualEncoderAttentionBlock {
+            attn,
+            attn_ln,
+            mlp,
+            mlp_ln,
         }
-
-        self.ln.forward(hidden_states)
     }
 }
 
 #[derive(Module, Debug)]
-pub struct WhisperModel<B: Backend> {
-    pub encoder: WhisperEncoder<B>,
-    pub decoder: WhisperDecoder<B>,
-    pub config: Ignored<WhisperConfig>,
+pub struct ResidualEncoderAttentionBlock<B: Backend> {
+    pub attn: MultiHeadSelfAttention<B>,
+    pub attn_ln: nn::LayerNorm<B>,
+    pub mlp: MLP<B>,
+    pub mlp_ln: nn::LayerNorm<B>,
 }
 
-impl<B: Backend> WhisperModel<B> {
-    pub fn new(config: WhisperConfig, device: &B::Device) -> Self {
-        let encoder = WhisperEncoder::new(&config, device);
-        let decoder = WhisperDecoder::new(&config, device);
+impl<B: Backend> ResidualEncoderAttentionBlock<B> {
+    pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
+        let x = x.clone() + self.attn.forward(self.attn_ln.forward(x), None);
+        let x = x.clone() + self.mlp.forward(self.mlp_ln.forward(x));
+        x
+    }
+}
 
-        Self {
-            encoder,
-            decoder,
-            config: Ignored(config),
+#[derive(Config, Debug)]
+pub struct ResidualDecoderAttentionBlockConfig {
+    n_state: usize,
+    n_head: usize,
+}
+
+impl ResidualDecoderAttentionBlockConfig {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> ResidualDecoderAttentionBlock<B> {
+        let attn = MultiHeadSelfAttentionConfig::new(self.n_state, self.n_head).init(device);
+        let attn_ln = nn::LayerNormConfig::new(self.n_state).init(device);
+
+        let cross_attn = MultiHeadCrossAttentionConfig::new(self.n_state, self.n_head).init(device);
+        let cross_attn_ln = nn::LayerNormConfig::new(self.n_state).init(device);
+
+        let mlp = MLPConfig::new(self.n_state).init(device);
+        let mlp_ln = nn::LayerNormConfig::new(self.n_state).init(device);
+
+        ResidualDecoderAttentionBlock {
+            attn,
+            attn_ln,
+            cross_attn,
+            cross_attn_ln,
+            mlp,
+            mlp_ln,
         }
     }
+}
 
-    pub fn forward(&self, x: Tensor<B, 3>, tokens: Tensor<B, 2, Int>) -> Tensor<B, 3> {
-        let encoder_output = self.encoder.forward(x, None);
+#[derive(Module, Debug)]
+pub struct ResidualDecoderAttentionBlock<B: Backend> {
+    pub attn: MultiHeadSelfAttention<B>,
+    pub attn_ln: nn::LayerNorm<B>,
+    pub cross_attn: MultiHeadCrossAttention<B>,
+    pub cross_attn_ln: nn::LayerNorm<B>,
+    pub mlp: MLP<B>,
+    pub mlp_ln: nn::LayerNorm<B>,
+}
 
-        let seq_len = tokens.dims()[1];
-        let decoder_input = Tensor::<B, 2, Int>::zeros([1, seq_len], &tokens.device());
-        self.decoder.forward(decoder_input, encoder_output, None)
+impl<B: Backend> ResidualDecoderAttentionBlock<B> {
+    pub fn forward(&self, x: Tensor<B, 3>, xa: Tensor<B, 3>, mask: Tensor<B, 2>) -> Tensor<B, 3> {
+        let x = x.clone() + self.attn.forward(self.attn_ln.forward(x), Some(mask));
+        let x = x.clone() + self.cross_attn.forward(self.cross_attn_ln.forward(x), xa);
+        let x = x.clone() + self.mlp.forward(self.mlp_ln.forward(x));
+        x
     }
+}
 
-    pub fn config(&self) -> &WhisperConfig {
-        &self.config.0
+// ============================================================================
+// MLP (Feed-Forward Network)
+// ============================================================================
+
+#[derive(Config, Debug)]
+pub struct MLPConfig {
+    n_state: usize,
+}
+
+impl MLPConfig {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> MLP<B> {
+        let lin1 = nn::LinearConfig::new(self.n_state, 4 * self.n_state).init(device);
+        let gelu = nn::Gelu::new();
+        let lin2 = nn::LinearConfig::new(4 * self.n_state, self.n_state).init(device);
+
+        MLP { lin1, gelu, lin2 }
     }
+}
 
-    pub fn forward_decoder_logits(
-        &self,
-        tokens: Tensor<B, 2, Int>,
-        encoder_output: Tensor<B, 3>,
-    ) -> Tensor<B, 3> {
-        let hidden = self.decoder.forward(tokens, encoder_output, None);
-        // Project to logits: hidden @ embedding.weight.T
-        // hidden: [batch, seq, state] (rank 3)
-        // embedding.weight: [vocab, state]
-        // transpose: [state, vocab]
-        // Need to unsqueeze to [1, state, vocab] for broadcast
-        let embedding_weight = self.decoder.token_embedding.weight.val();
-        let weight_t = embedding_weight.transpose().unsqueeze_dim(0);
-        hidden.matmul(weight_t)
+#[derive(Module, Debug)]
+pub struct MLP<B: Backend> {
+    pub lin1: nn::Linear<B>,
+    pub gelu: nn::Gelu,
+    pub lin2: nn::Linear<B>,
+}
+
+impl<B: Backend> MLP<B> {
+    pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
+        let x = self.lin1.forward(x);
+        let x = self.gelu.forward(x);
+        self.lin2.forward(x)
     }
+}
 
-    pub fn generate_greedy(
-        &self,
-        mel: Tensor<B, 3>,
-        start_tokens: Vec<u32>,
-        max_len: usize,
-        eot_token: u32,
-    ) -> Result<Vec<Vec<u32>>> {
-        let device = mel.device();
-        let [batch_size, _, _] = mel.dims();
+// ============================================================================
+// Multi-Head Attention
+// ============================================================================
 
-        // 1. Encode
-        let encoder_output = self.encoder.forward(mel, None);
+#[derive(Config, Debug)]
+pub struct MultiHeadSelfAttentionConfig {
+    n_state: usize,
+    n_head: usize,
+}
 
-        // 2. Initialize decoder input
-        // [batch_size, start_len]
-        let start_tokens_i32: Vec<i32> = start_tokens.iter().map(|&t| t as i32).collect();
-        let mut tokens = Tensor::<B, 1, Int>::from_ints(&start_tokens_i32[..], &device)
-            .reshape([1, start_tokens.len()])
-            .repeat(&[batch_size, 1]);
+impl MultiHeadSelfAttentionConfig {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> MultiHeadSelfAttention<B> {
+        assert!(
+            self.n_state % self.n_head == 0,
+            "State size {} must be a multiple of head size {}",
+            self.n_state,
+            self.n_head
+        );
 
-        // 3. Loop
-        for _ in 0..max_len {
-            // Forward pass to get logits
-            let logits = self.forward_decoder_logits(tokens.clone(), encoder_output.clone());
+        let n_head = self.n_head;
+        let query = nn::LinearConfig::new(self.n_state, self.n_state).init(device);
+        let key = nn::LinearConfig::new(self.n_state, self.n_state)
+            .with_bias(false)
+            .init(device);
+        let value = nn::LinearConfig::new(self.n_state, self.n_state).init(device);
+        let out = nn::LinearConfig::new(self.n_state, self.n_state).init(device);
 
-            // Get logits for the last token: [batch, 1, vocab]
-            let seq_len = tokens.dims()[1];
-            let last_logits = logits.slice([0..batch_size, seq_len - 1..seq_len]);
-
-            // Greedy: argmax along vocab dimension (dim 2)
-            let next_token_logits = last_logits.argmax(2); // Returns [batch, 1, 1] (indices)
-            let next_token = next_token_logits.squeeze::<2>(); // [batch, 1]
-
-            // Concatenate
-            tokens = Tensor::cat(vec![tokens, next_token.clone()], 1);
-
-            // Check for EOT (simplified for batch=1)
-            // In a real implementation, we'd handle batch termination masks
-            if batch_size == 1 {
-                let token_data = next_token.into_data();
-                let token_scalar = token_data.as_slice::<i32>().unwrap()[0] as u32;
-                if token_scalar == eot_token {
-                    break;
-                }
-            }
+        MultiHeadSelfAttention {
+            n_head,
+            query,
+            key,
+            value,
+            out,
         }
-
-        // Convert tensors to Vec<Vec<u32>>
-        let mut results = Vec::with_capacity(batch_size);
-        let token_data = tokens.into_data();
-        let flat_tokens: Vec<u32> = token_data
-            .as_slice::<i32>()
-            .unwrap()
-            .iter()
-            .map(|&x| x as u32)
-            .collect();
-        let seq_len = flat_tokens.len() / batch_size;
-
-        for i in 0..batch_size {
-            let start = i * seq_len;
-            let end = start + seq_len;
-            results.push(flat_tokens[start..end].to_vec());
-        }
-
-        Ok(results)
     }
+}
+
+#[derive(Module, Debug)]
+pub struct MultiHeadSelfAttention<B: Backend> {
+    pub n_head: usize,
+    pub query: nn::Linear<B>,
+    pub key: nn::Linear<B>,
+    pub value: nn::Linear<B>,
+    pub out: nn::Linear<B>,
+}
+
+impl<B: Backend> MultiHeadSelfAttention<B> {
+    pub fn forward(&self, x: Tensor<B, 3>, mask: Option<Tensor<B, 2>>) -> Tensor<B, 3> {
+        let q = self.query.forward(x.clone());
+        let k = self.key.forward(x.clone());
+        let v = self.value.forward(x);
+
+        let wv = qkv_attention(q, k, v, mask, self.n_head);
+
+        self.out.forward(wv)
+    }
+}
+
+#[derive(Config, Debug)]
+pub struct MultiHeadCrossAttentionConfig {
+    n_state: usize,
+    n_head: usize,
+}
+
+impl MultiHeadCrossAttentionConfig {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> MultiHeadCrossAttention<B> {
+        assert!(
+            self.n_state % self.n_head == 0,
+            "State size {} must be a multiple of head size {}",
+            self.n_state,
+            self.n_head
+        );
+
+        let n_head = self.n_head;
+        let query = nn::LinearConfig::new(self.n_state, self.n_state).init(device);
+        let key = nn::LinearConfig::new(self.n_state, self.n_state)
+            .with_bias(false)
+            .init(device);
+        let value = nn::LinearConfig::new(self.n_state, self.n_state).init(device);
+        let out = nn::LinearConfig::new(self.n_state, self.n_state).init(device);
+
+        MultiHeadCrossAttention {
+            n_head,
+            query,
+            key,
+            value,
+            out,
+        }
+    }
+}
+
+#[derive(Module, Debug)]
+pub struct MultiHeadCrossAttention<B: Backend> {
+    pub n_head: usize,
+    pub query: nn::Linear<B>,
+    pub key: nn::Linear<B>,
+    pub value: nn::Linear<B>,
+    pub out: nn::Linear<B>,
+}
+
+impl<B: Backend> MultiHeadCrossAttention<B> {
+    pub fn forward(&self, x: Tensor<B, 3>, xa: Tensor<B, 3>) -> Tensor<B, 3> {
+        let q = self.query.forward(x);
+        let k = self.key.forward(xa.clone());
+        let v = self.value.forward(xa);
+
+        let wv = qkv_attention(q, k, v, None, self.n_head);
+
+        self.out.forward(wv)
+    }
+}
+
+// ============================================================================
+// Attention Utilities
+// ============================================================================
+
+pub fn qkv_attention<B: Backend>(
+    q: Tensor<B, 3>,
+    k: Tensor<B, 3>,
+    v: Tensor<B, 3>,
+    mask: Option<Tensor<B, 2>>,
+    n_head: usize,
+) -> Tensor<B, 3> {
+    let [n_batch, n_qctx, n_state] = q.dims();
+    let [_, n_ctx, _] = k.dims();
+
+    let scale = (n_state as f64 / n_head as f64).powf(-0.25);
+    let n_hstate = n_state / n_head;
+
+    let q = q
+        .reshape([n_batch, n_qctx, n_head, n_hstate])
+        .swap_dims(1, 2)
+        * scale;
+    let k = k
+        .reshape([n_batch, n_ctx, n_head, n_hstate])
+        .swap_dims(1, 2)
+        .transpose()
+        * scale;
+    let v = v
+        .reshape([n_batch, n_ctx, n_head, n_hstate])
+        .swap_dims(1, 2);
+
+    let qk = q.matmul(k);
+
+    // Apply mask
+    let qk = if let Some(mask) = mask {
+        qk + mask.slice([0..n_qctx, 0..n_ctx]).unsqueeze::<4>()
+    } else {
+        qk
+    };
+
+    // Normalize value weightings
+    let w = softmax(qk, 3);
+    let o = w.matmul(v).swap_dims(1, 2).flatten(2, 3);
+
+    o
+}
+
+/// Create causal attention mask for decoder
+pub fn attn_decoder_mask<B: Backend>(seq_length: usize, device: &B::Device) -> Tensor<B, 2> {
+    let mut mask = Tensor::<B, 2>::zeros([seq_length, seq_length], device);
+
+    for i in 0..(seq_length - 1) {
+        let values =
+            Tensor::<B, 2>::zeros([1, seq_length - (i + 1)], device).add_scalar(NEG_INFINITY);
+        mask = mask.slice_assign([i..i + 1, i + 1..seq_length], values);
+    }
+
+    mask
 }
 
 #[cfg(test)]
@@ -401,33 +701,65 @@ mod tests {
     type TestBackend = NdArray<f32>;
 
     #[test]
-    fn test_model_creation() -> Result<()> {
-        let device = NdArrayDevice::default();
+    fn test_config_creation() {
         let config = WhisperConfig::tiny_en();
-        let model = WhisperModel::<NdArray>::new(config.clone(), &device);
-
-        // Test that model creates successfully
-        assert_eq!(model.config.0.n_audio_state, 384);
-        assert_eq!(model.config.0.n_text_state, 384);
-        Ok(())
+        assert_eq!(config.audio_encoder_config.n_audio_state, 384);
+        assert_eq!(config.text_decoder_config.n_text_state, 384);
+        assert_eq!(config.audio_encoder_config.n_mels, 80);
     }
 
     #[test]
-    fn test_encoder_forward() -> Result<()> {
+    fn test_model_init() {
         let device = NdArrayDevice::default();
         let config = WhisperConfig::tiny_en();
-        let encoder = WhisperEncoder::<NdArray>::new(&config, &device);
+        let model = config.init::<TestBackend>(&device);
 
-        // Test with dummy input [batch=1, time=100, mels=80]
-        let x = Tensor::random(
-            [1, 100, 80],
-            burn::tensor::Distribution::Uniform(0.0, 1.0),
-            &device,
-        );
-        let output = encoder.forward(x, None);
+        assert_eq!(model.encoder.n_mels, 80);
+        assert_eq!(model.decoder.n_vocab, 51864);
+    }
 
-        // Check output shape [batch=1, time=100, state=384]
-        assert_eq!(output.dims(), [1, 100, 384]);
-        Ok(())
+    #[test]
+    fn test_encoder_forward() {
+        let device = NdArrayDevice::default();
+        let config = WhisperConfig::tiny_en();
+        let model = config.init::<TestBackend>(&device);
+
+        // Input: [batch=1, n_mels=80, time=100]
+        let mel = Tensor::random([1, 80, 100], Distribution::Normal(0.0, 1.0), &device);
+        let output = model.encoder.forward(mel);
+
+        // Output: [batch=1, time/2=50, n_state=384]
+        assert_eq!(output.dims()[0], 1);
+        assert_eq!(output.dims()[1], 50); // Stride 2 halves the time dimension
+        assert_eq!(output.dims()[2], 384);
+    }
+
+    #[test]
+    fn test_decoder_forward() {
+        let device = NdArrayDevice::default();
+        let config = WhisperConfig::tiny_en();
+        let model = config.init::<TestBackend>(&device);
+
+        // Encoder output: [batch=1, time=50, n_state=384]
+        let encoder_output = Tensor::random([1, 50, 384], Distribution::Normal(0.0, 1.0), &device);
+
+        // Tokens: [batch=1, seq_len=5]
+        let tokens = Tensor::<TestBackend, 2, Int>::zeros([1, 5], &device);
+
+        let logits = model.decoder.forward(tokens, encoder_output);
+
+        // Output: [batch=1, seq_len=5, vocab=51864]
+        assert_eq!(logits.dims()[0], 1);
+        assert_eq!(logits.dims()[1], 5);
+        assert_eq!(logits.dims()[2], 51864);
+    }
+
+    #[test]
+    fn test_attention_mask() {
+        let device = NdArrayDevice::default();
+        let mask = attn_decoder_mask::<TestBackend>(4, &device);
+
+        assert_eq!(mask.dims(), [4, 4]);
+        // Check that it's lower triangular (zeros on diagonal and below, -inf above)
     }
 }

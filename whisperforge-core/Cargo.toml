@@ -7,6 +7,7 @@ edition = "2021"
 burn = { workspace = true, features = ["std", "ndarray", "wgpu"] }
 burn-ndarray = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokenizers = { workspace = true }
 rubato = { workspace = true }
