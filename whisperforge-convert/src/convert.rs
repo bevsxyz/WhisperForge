@@ -527,8 +527,10 @@ fn load_linear<B: Backend>(
     device: &B::Device,
 ) -> burn::nn::Linear<B> {
     let mut linear = linear.clone();
-    // PyTorch stores weights as [out_features, in_features], Burn expects same
-    linear.weight = Param::from_tensor(weight.to_tensor(device));
+    // PyTorch stores weights as [out_features, in_features]
+    // Burn expects [in_features, out_features] for input.matmul(weight)
+    let weight_tensor: Tensor<B, 2> = weight.to_tensor(device);
+    linear.weight = Param::from_tensor(weight_tensor.transpose());
     if let Some(b) = bias {
         linear.bias = Some(Param::from_tensor(b.to_tensor(device)));
     }
@@ -541,7 +543,10 @@ fn load_linear_no_bias<B: Backend>(
     device: &B::Device,
 ) -> burn::nn::Linear<B> {
     let mut linear = linear.clone();
-    linear.weight = Param::from_tensor(weight.to_tensor(device));
+    // PyTorch stores weights as [out_features, in_features]
+    // Burn expects [in_features, out_features] for input.matmul(weight)
+    let weight_tensor: Tensor<B, 2> = weight.to_tensor(device);
+    linear.weight = Param::from_tensor(weight_tensor.transpose());
     linear.bias = None;
     linear
 }

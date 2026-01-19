@@ -4,7 +4,7 @@ use burn::tensor::{Int, Tensor};
 use burn_ndarray::NdArrayDevice;
 use clap::Parser;
 use tokenizers::Tokenizer;
-use whisperforge_core::{audio, load_whisper, Whisper};
+use whisperforge_core::{Whisper, audio, load_whisper};
 
 #[derive(Parser, Debug)]
 #[command(name = "whisperforge")]
@@ -35,6 +35,7 @@ fn main() -> Result<()> {
     println!("Loading audio: {}", args.audio_file);
     let audio_data = audio::load_wav_file(&args.audio_file)?;
     let processed_audio = audio_data.to_16khz_mono()?;
+
     println!(
         "Audio loaded: {:.2}s, {}Hz",
         processed_audio.duration(),
@@ -67,6 +68,23 @@ fn main() -> Result<()> {
         80,  // n_mels
         &device,
     )?;
+
+    // Whisper expects exactly 3000 mel frames (30 seconds at 100 fps)
+    // n_audio_ctx = 1500 (after conv downsampling by 2)
+    let expected_frames = 3000;
+    let [batch, n_mels, n_frames] = mel_features.dims();
+
+    let mel_features = if n_frames < expected_frames {
+        // Pad with zeros
+        let padding =
+            Tensor::<Backend, 3>::zeros([batch, n_mels, expected_frames - n_frames], &device);
+        Tensor::cat(vec![mel_features, padding], 2)
+    } else if n_frames > expected_frames {
+        // Trim
+        mel_features.slice([0..batch, 0..n_mels, 0..expected_frames])
+    } else {
+        mel_features
+    };
 
     println!("Mel spectrogram shape: {:?}", mel_features.dims());
 
@@ -108,11 +126,17 @@ fn main() -> Result<()> {
 
         // Get logits
         let logits = model.forward_decoder(token_tensor, encoder_output.clone());
+        let logits_shape = logits.dims();
+        // println!("Logits shape: {:?}", logits_shape);
+        // std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
         // Get last token's logits and find argmax
-        let vocab_size = logits.dims()[2];
-        let last_logits = logits.slice([0..1, (tokens.len() - 1)..tokens.len(), 0..vocab_size]);
-        let last_logits = last_logits.squeeze::<2>().squeeze::<1>();
+        let batch_size = logits_shape[0];
+        let seq_len = logits_shape[1];
+        let vocab_size = logits_shape[2];
+        let last_logits = logits.slice([0..batch_size, (seq_len - 1)..seq_len, 0..vocab_size]);
+        // Shape is [1, 1, 51864] -> squeeze sequence dimension to get [1, 51864]
+        let last_logits = last_logits.squeeze::<1>();
 
         let next_token = last_logits.argmax(0).into_scalar() as u32;
 

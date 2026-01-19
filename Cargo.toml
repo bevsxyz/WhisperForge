@@ -16,6 +16,7 @@ burn-ndarray = "0.20.0"
 # Audio processing
 rubato = "1.0"
 hound = "3.5"
+rustfft = "6.2"
 
 # Text processing
 tokenizers = "0.20"
