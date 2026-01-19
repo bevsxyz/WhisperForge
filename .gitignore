@@ -18,6 +18,11 @@ Cargo.lock
 test_data/
 *.wav
 
+# Model files (large binaries)
+models/
+*.mpk
+*.safetensors
+
 # IDE files
 .vscode/
 .idea/
