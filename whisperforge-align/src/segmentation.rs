@@ -116,31 +116,27 @@ impl AudioSegmenter {
         segments: &[AudioSegment],
         max_gap: f64,
     ) -> Result<Vec<AudioSegment>> {
-        let mut merged = Vec::new();
-        let mut current: Option<AudioSegment> = None;
+        if segments.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        for segment in segments {
-            match current.as_mut() {
-                Some(curr) => {
-                    let gap = segment.start_time - curr.end_time;
-                    if gap <= max_gap {
-                        // Merge segments
-                        curr.end_sample = segment.end_sample;
-                        curr.end_time = segment.end_time;
-                        curr.samples.extend(&segment.samples);
-                    } else {
-                        merged.push(current.take().unwrap());
-                        current = Some(segment.clone());
-                    }
-                }
-                None => current = Some(segment.clone()),
+        let mut merged = Vec::new();
+        let mut current = segments[0].clone();
+
+        for segment in &segments[1..] {
+            let gap = segment.start_time - current.end_time;
+            if gap < max_gap {
+                // Merge segments
+                current.end_sample = segment.end_sample;
+                current.end_time = segment.end_time;
+                current.samples.extend(&segment.samples);
+            } else {
+                merged.push(current);
+                current = segment.clone();
             }
         }
 
-        if let Some(curr) = current {
-            merged.push(curr);
-        }
-
+        merged.push(current);
         Ok(merged)
     }
 }

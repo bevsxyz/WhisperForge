@@ -109,11 +109,9 @@ impl VoiceActivityDetector {
         crossings as f32 / (frame.len() - 1) as f32
     }
 
-    /// Convert energy to probability using sigmoid
+    /// Convert energy to probability using exponential curve
     fn energy_to_probability(&self, energy: f32) -> f32 {
-        let threshold = 1e-6; // Minimum energy threshold
-        let scaled_energy = (energy - threshold).max(0.0) * 1000.0;
-        1.0 / (1.0 + (-scaled_energy).exp())
+        1.0 - (-energy * 250.0).exp()
     }
 
     /// Calculate confidence score for a segment

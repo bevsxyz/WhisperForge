@@ -45,7 +45,7 @@ fn format_time(seconds: f64) -> String {
 /// Parse SRT timestamp back to seconds
 fn parse_time(timestamp: &str) -> f64 {
     let parts: Vec<&str> = timestamp.split(',').collect();
-    if parts.len() != 3 {
+    if parts.len() != 2 {
         return 0.0;
     }
 
@@ -58,8 +58,8 @@ fn parse_time(timestamp: &str) -> f64 {
     let hours: f64 = time_parts[0].parse().unwrap_or(0.0);
     let minutes: f64 = time_parts[1].parse().unwrap_or(0.0);
     let seconds: f64 = time_parts[2].parse().unwrap_or(0.0);
-    let millis: f64 = if parts.len() > 2 {
-        parts[2].parse().unwrap_or(0.0)
+    let millis: f64 = if parts.len() > 1 {
+        parts[1].parse().unwrap_or(0.0)
     } else {
         0.0
     };

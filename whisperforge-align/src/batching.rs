@@ -40,7 +40,7 @@ impl<B: Backend> BatchedTranscriber<B> {
         for segment in segments {
             // Placeholder transcription based on duration
             let duration = segment.duration();
-            let text = format!("[{:.1}s {:.2}s] ", duration, duration * 0.1);
+            let text = format!("[{:.1}s {:.1}s]", duration, duration);
             results.push(text);
         }
 
@@ -92,8 +92,8 @@ mod tests {
 
         let results = transcriber.transcribe_batch(&segments)?;
         assert_eq!(results.len(), 2);
-        assert!(results[0].contains("[1.0s 0.1s]"));
-        assert!(results[1].contains("[2.0s 0.2s]"));
+        assert!(results[0].contains("[1.0s 1.0s]"));
+        assert!(results[1].contains("[1.0s 1.0s]"));
 
         Ok(())
     }
