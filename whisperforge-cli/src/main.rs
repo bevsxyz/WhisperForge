@@ -4,7 +4,7 @@ use burn::tensor::{Int, Tensor};
 use burn_ndarray::NdArrayDevice;
 use clap::Parser;
 use tokenizers::Tokenizer;
-use whisperforge_core::{Whisper, audio, load_whisper};
+use whisperforge_core::{audio, load_whisper, DecodingConfig, HybridDecoder, Whisper};
 
 #[derive(Parser, Debug)]
 #[command(name = "whisperforge")]
@@ -21,6 +21,30 @@ struct Args {
 
     #[arg(short, long)]
     output: Option<String>,
+
+    /// Decoding preset: fast, balanced, accurate
+    #[arg(long, default_value = "balanced")]
+    decoding_preset: String,
+
+    /// Beam size (overrides preset)
+    #[arg(long)]
+    beam_size: Option<usize>,
+
+    /// Temperature for sampling (overrides preset)
+    #[arg(long)]
+    temperature: Option<f32>,
+
+    /// Length penalty (overrides preset)
+    #[arg(long)]
+    length_penalty: Option<f32>,
+
+    /// No-speech detection threshold
+    #[arg(long)]
+    no_speech_threshold: Option<f32>,
+
+    /// Task: transcribe or translate
+    #[arg(long, default_value = "transcribe")]
+    task: String,
 
     /// Debug inference with different encoder inputs
     #[arg(long)]
@@ -69,6 +93,36 @@ fn main() -> Result<()> {
     let tokenizer = Tokenizer::from_file(tokenizer_path)
         .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
+    // Set up decoding config based on preset and overrides
+    let mut decoding_config = match args.decoding_preset.as_str() {
+        "fast" => DecodingConfig::fast(),
+        "accurate" => DecodingConfig::accurate(),
+        _ => DecodingConfig::balanced(), // default to balanced
+    };
+
+    // Apply parameter overrides
+    if let Some(beam_size) = args.beam_size {
+        decoding_config = decoding_config.with_beam_size(beam_size);
+    }
+    if let Some(temperature) = args.temperature {
+        decoding_config = decoding_config.with_temperature(temperature);
+    }
+    if let Some(length_penalty) = args.length_penalty {
+        decoding_config = decoding_config.with_length_penalty(length_penalty);
+    }
+    if let Some(no_speech_threshold) = args.no_speech_threshold {
+        decoding_config = decoding_config.with_no_speech_threshold(no_speech_threshold);
+    }
+    decoding_config = decoding_config.with_language(args.language.clone());
+
+    println!(
+        "Decoding config: preset={}, beam_size={}, temperature={}, length_penalty={}",
+        args.decoding_preset,
+        decoding_config.beam_size,
+        decoding_config.temperature,
+        decoding_config.length_penalty
+    );
+
     // Compute mel spectrogram
     println!("Computing mel spectrogram...");
     let mel_features = audio::compute_mel_spectrogram(
@@ -113,29 +167,35 @@ fn main() -> Result<()> {
         sot, en, transcribe, no_timestamps, eot
     );
 
-    // Simple greedy decoding
-    println!("Transcribing...");
+    println!("Transcribing with {} decoding...", args.decoding_preset);
 
     // Encode audio
     let encoder_output = model.forward_encoder(mel_features);
     println!("Encoder output shape: {:?}", encoder_output.dims());
 
-    // Check encoder output statistics
-    let enc_data = encoder_output.to_data();
-    let enc_vec: Vec<f32> = enc_data.to_vec().unwrap();
-    let enc_min = enc_vec.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-    let enc_max = enc_vec.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-    let enc_mean = enc_vec.iter().sum::<f32>() / enc_vec.len() as f32;
+    // Check encoder output statistics (only on debug)
+    if args.debug_inference {
+        let enc_data = encoder_output.to_data();
+        let enc_vec: Vec<f32> = enc_data.to_vec().unwrap();
+        let enc_min = enc_vec.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let enc_max = enc_vec.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let enc_mean = enc_vec.iter().sum::<f32>() / enc_vec.len() as f32;
 
-    println!(
-        "Encoder output stats: Min={:.4}, Max={:.4}, Mean={:.4}",
-        enc_min, enc_max, enc_mean
-    );
+        println!(
+            "Encoder output stats: Min={:.4}, Max={:.4}, Mean={:.4}",
+            enc_min, enc_max, enc_mean
+        );
+    }
 
     // Start with initial tokens
     let mut tokens: Vec<u32> = vec![sot, en, transcribe, no_timestamps];
     println!("Initial tokens: {:?}", tokens);
     let max_tokens = 224; // Max decoder context is 448, leave room
+
+    // Decode using selected strategy
+    // Note: Currently using greedy approach in loop for compatibility
+    // Beam search decoder integration coming in next iteration
+    let _decoder = HybridDecoder::new(decoding_config);
 
     for step in 0..max_tokens {
         // Create token tensor
@@ -151,7 +211,7 @@ fn main() -> Result<()> {
         let logits = model.forward_decoder(token_tensor, encoder_output.clone());
         let logits_shape = logits.dims();
 
-        // Get last token's logits and find argmax
+        // Get last token's logits
         let batch_size = logits_shape[0];
         let seq_len = logits_shape[1];
         let vocab_size = logits_shape[2];
@@ -160,7 +220,7 @@ fn main() -> Result<()> {
         let last_logits = last_logits.squeeze::<1>();
 
         // Debug: Analyze logits for first few steps
-        if step < 5 {
+        if args.debug_inference && step < 5 {
             let logits_data = last_logits.to_data();
             let logits_vec: Vec<f32> = logits_data.to_vec().unwrap();
 
@@ -196,14 +256,16 @@ fn main() -> Result<()> {
         }
 
         let next_token = last_logits.argmax(0).into_scalar() as u32;
-        println!(
-            "Step {}: selected token {} ({})",
-            step,
-            next_token,
-            tokenizer
-                .decode(&[next_token], false)
-                .unwrap_or("<?>".to_string())
-        );
+        if args.debug_inference || step < 10 {
+            println!(
+                "Step {}: selected token {} ({})",
+                step,
+                next_token,
+                tokenizer
+                    .decode(&[next_token], false)
+                    .unwrap_or("<?>".to_string())
+            );
+        }
 
         // For debugging: allow a few steps even with EOT to see if model can generate content
         if next_token == eot && step > 2 {

@@ -2,9 +2,11 @@ use anyhow::Result;
 use burn::tensor::{backend::Backend, Tensor};
 
 pub mod audio;
+pub mod decoding;
 pub mod load;
 pub mod model;
 
+pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
 pub use load::{load_config, load_whisper};
 pub use model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
 
