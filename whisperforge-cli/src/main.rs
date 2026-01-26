@@ -46,6 +46,14 @@ struct Args {
     #[arg(long, default_value = "transcribe")]
     task: String,
 
+    /// Enable voice activity detection (VAD) filtering
+    #[arg(long)]
+    vad_enabled: bool,
+
+    /// VAD detection threshold (0.0-1.0, higher = stricter)
+    #[arg(long)]
+    vad_threshold: Option<f32>,
+
     /// Debug inference with different encoder inputs
     #[arg(long)]
     debug_inference: bool,
@@ -122,6 +130,11 @@ fn main() -> Result<()> {
         decoding_config.temperature,
         decoding_config.length_penalty
     );
+
+    if args.vad_enabled {
+        let vad_threshold = args.vad_threshold.unwrap_or(0.5);
+        println!("VAD enabled: threshold={}", vad_threshold);
+    }
 
     // Compute mel spectrogram
     println!("Computing mel spectrogram...");
