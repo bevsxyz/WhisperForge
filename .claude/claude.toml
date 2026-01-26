@@ -1,0 +1,118 @@
+[project]
+name = "WhisperForge"
+description = "High-performance Rust rewrite of WhisperX with CUDA acceleration"
+version = "0.1.0"
+rust_version = "1.70+"
+
+[context]
+# Primary development focus
+current_phase = "Phase 1: SOTA Decoding Implementation"
+current_week = "Week 1-2"
+focus_area = "faster-whisper-style hybrid decoding strategy"
+status = "In progress - core SOTA decoding module"
+
+[ai-agent]
+# Optimization for Claude CLI / opencode
+optimized_for = "claude-cli-opencode"
+context_files = [
+  "README.md",
+  ".claude/context.md",
+  "PROJECT_STATUS.md",
+  "DEVELOPMENT_PLAN.md",
+  "AGENTS.md"
+]
+quick_start = "README.md"
+contributing = "CONTRIBUTING.md"
+
+[build]
+# Build configuration
+framework = "Burn 0.20.0"
+primary_backend = "cuda"
+fallback_backends = ["wgpu", "ndarray"]
+optimization_level = 3
+lto = true
+
+# Workspace members
+members = [
+  "whisperforge-core",
+  "whisperforge-align",
+  "whisperforge-diarize",
+  "whisperforge-cli",
+  "whisperforge-convert"
+]
+
+[development]
+# Quick reference for common development tasks
+commands = {
+  check = "cargo check --all",
+  test = "cargo test -p whisperforge-core -p whisperforge-convert -p whisperforge-cli",
+  format = "cargo fmt --all",
+  lint = "cargo clippy --all-targets --all-features",
+  build = "cargo build --release",
+  run = "cargo run -p whisperforge-cli -- -a test_audio.wav -m tiny_en_converted"
+}
+
+[performance]
+# Target performance metrics
+targets = {
+  tiny_en_realtime = "200x",
+  large_v2_realtime = "8x",
+  startup_time = "<0.5s",
+  max_vram = "2GB"
+}
+
+[constraints]
+# Development constraints to consider
+memory_critical = true
+performance_critical = true
+cuda_acceleration = true
+no_unsafe_in_hot_paths = true
+
+[directories]
+# Key directories for navigation
+source = "whisperforge-*/src/"
+models = "models/"
+tests = "tests/"
+docs = "."
+config = ".claude/"
+
+[focus-areas]
+# AI-agent focus guidance
+primary = [
+  "SOTA decoding (whisperforge-core/src/decoding.rs)",
+  "Quality metrics (compression ratio, log probability)",
+  "Beam search implementation",
+  "Temperature fallback logic"
+]
+
+secondary = [
+  "VAD integration (whisperforge-align)",
+  "CLI parameter updates (whisperforge-cli)",
+  "Word timestamp extraction",
+  "Diarization support"
+]
+
+avoid = [
+  "Model architecture changes (frozen at Burn 0.20)",
+  "Audio pipeline rewrite (already working)",
+  "Unrelated refactoring",
+  "Feature scope creep beyond DEVELOPMENT_PLAN"
+]
+
+[code-style]
+# Reference AGENTS.md for comprehensive guidelines
+key_points = [
+  "Performance-first optimization",
+  "Memory-safe error handling with anyhow",
+  "No clones in hot paths",
+  "Batch operations for parallelization",
+  "Comprehensive doc comments",
+  "Unit tests for all public functions"
+]
+
+[ai-workflows]
+# Recommended workflow patterns
+before_start = ["Read PROJECT_STATUS.md", "Check DEVELOPMENT_PLAN.md", "Review AGENTS.md"]
+during_implementation = ["Test frequently", "Commit atomically", "Use branch per feature"]
+before_commit = ["cargo fmt", "cargo clippy", "cargo test", "verify docs"]
+before_pr = ["All tests pass", "No clippy warnings", "Documentation complete", "Clear commit messages"]
