@@ -33,6 +33,12 @@ clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
 thiserror = "1.0"
 
+# Compression (for decoding quality metrics)
+flate2 = "1.0"
+
+# RNG (for temperature sampling in decoding)
+rand = "0.8"
+
 # Development dependencies
 tempfile = "3.8"
 

@@ -1,8 +1,11 @@
 /// SOTA decoding strategies for Whisper transcription
 /// Implements faster-whisper's hybrid beam search + temperature fallback approach
 use anyhow::{anyhow, Result};
+use flate2::{write::GzEncoder, Compression};
+use rand::SeedableRng;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::io::Write;
 
 /// Configuration for beam search decoding
 #[derive(Debug, Clone)]
@@ -19,6 +22,10 @@ pub struct DecodingConfig {
     pub max_length: usize,
     /// Language token (e.g., "en" for English)
     pub language: String,
+    /// Gzip compression ratio threshold — ratio above this signals a hallucination loop (default 2.4)
+    pub compression_ratio_threshold: f32,
+    /// Average log-probability threshold — below this signals low-confidence output (default -1.0)
+    pub log_prob_threshold: f32,
 }
 
 impl Default for DecodingConfig {
@@ -30,6 +37,8 @@ impl Default for DecodingConfig {
             no_speech_threshold: 0.6,
             max_length: 448, // Whisper max context
             language: "en".to_string(),
+            compression_ratio_threshold: 2.4,
+            log_prob_threshold: -1.0,
         }
     }
 }
@@ -94,6 +103,82 @@ impl DecodingConfig {
         self.language = language;
         self
     }
+}
+
+// ============================================================================
+// Quality metrics
+// ============================================================================
+
+/// Gzip compression ratio of `text` — `text.len() / compressed_len`.
+///
+/// Values above `DecodingConfig::compression_ratio_threshold` (2.4) indicate a
+/// repetitive or hallucinated output.
+pub fn compression_ratio(text: &str) -> f32 {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() {
+        return 0.0;
+    }
+    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(bytes).ok();
+    let compressed_len = enc.finish().unwrap_or_default().len().max(1);
+    bytes.len() as f32 / compressed_len as f32
+}
+
+/// Softmax probability of `token` from raw logits.
+fn softmax_at(logits: &[f32], token: u32) -> f32 {
+    let idx = token as usize;
+    if idx >= logits.len() {
+        return 0.0;
+    }
+    let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let exp_sum: f32 = logits.iter().map(|&l| (l - max).exp()).sum();
+    ((logits[idx] - max).exp()) / exp_sum.max(f32::EPSILON)
+}
+
+/// Log-softmax of `token` given logits scaled by `temp` (0.0 → greedy / unscaled).
+fn log_softmax_at(logits: &[f32], token: u32, temp: f32) -> f32 {
+    let idx = token as usize;
+    if idx >= logits.len() {
+        return f32::NEG_INFINITY;
+    }
+    let scaled: Vec<f32> = if temp > 0.0 {
+        logits.iter().map(|&l| l / temp).collect()
+    } else {
+        logits.to_vec()
+    };
+    let max = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let log_sum = max + scaled.iter().map(|&l| (l - max).exp()).sum::<f32>().ln();
+    scaled[idx] - log_sum
+}
+
+/// Sample a token from `logits` at the given temperature.
+///
+/// At `temp == 0.0` this is equivalent to argmax (greedy).
+fn sample_from_logits(logits: &[f32], temp: f32, rng: &mut impl rand::Rng) -> u32 {
+    if temp <= 0.0 || logits.is_empty() {
+        return argmax_logits(logits);
+    }
+    let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let exps: Vec<f32> = logits.iter().map(|&l| ((l - max) / temp).exp()).collect();
+    let sum: f32 = exps.iter().sum::<f32>().max(f32::EPSILON);
+    let threshold: f32 = rng.gen::<f32>() * sum;
+    let mut cumsum = 0.0;
+    for (i, &e) in exps.iter().enumerate() {
+        cumsum += e;
+        if cumsum >= threshold {
+            return i as u32;
+        }
+    }
+    (logits.len() - 1) as u32
+}
+
+fn argmax_logits(logits: &[f32]) -> u32 {
+    logits
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+        .map(|(i, _)| i as u32)
+        .unwrap_or(0)
 }
 
 /// Represents a candidate sequence during beam search
@@ -310,21 +395,20 @@ impl GreedyDecoder {
 
 /// Multi-hypothesis decoding strategy that tries multiple approaches
 pub struct HybridDecoder {
+    config: DecodingConfig,
     beam_decoder: BeamSearchDecoder,
-    #[allow(dead_code)]
-    greedy_decoder: GreedyDecoder,
 }
 
 impl HybridDecoder {
     /// Create a new hybrid decoder
     pub fn new(config: DecodingConfig) -> Self {
         Self {
-            beam_decoder: BeamSearchDecoder::new(config),
-            greedy_decoder: GreedyDecoder,
+            beam_decoder: BeamSearchDecoder::new(config.clone()),
+            config,
         }
     }
 
-    /// Decode with fallback strategy
+    /// Decode with beam-search / greedy fallback (no quality gating).
     pub fn decode(
         &self,
         token_probs: &[Vec<f32>],
@@ -333,17 +417,94 @@ impl HybridDecoder {
         eos_token: u32,
         pad_token: u32,
     ) -> Result<Vec<u32>> {
-        // Try beam search first
         match self
             .beam_decoder
             .decode(token_probs, initial_token, vocab_size, eos_token, pad_token)
         {
             Ok(tokens) if tokens.len() > 1 => Ok(tokens),
-            // Fallback to greedy if beam search fails or produces empty result
             _ => {
                 GreedyDecoder::decode(token_probs, initial_token, vocab_size, eos_token, pad_token)
             }
         }
+    }
+
+    /// Decode with quality-gated temperature fallback (faster-whisper SOTA strategy).
+    ///
+    /// Iterates over `config.temperatures` in order. At each temperature, samples
+    /// tokens from the collected logits and checks:
+    /// - `no_speech_prob > no_speech_threshold` → return empty (silence)
+    /// - `avg_log_prob < log_prob_threshold` → retry at next temperature
+    /// - `compression_ratio > compression_ratio_threshold` → retry at next temperature
+    ///
+    /// Returns the first result that passes all quality gates, or the last attempt
+    /// if all temperatures are exhausted.
+    ///
+    /// # Arguments
+    /// * `token_probs` — per-step raw logits collected autoregressively from the decoder
+    /// * `initial_token` — first token to prepend to the output sequence
+    /// * `vocab_size` — vocabulary size (bounds check for `no_speech_token`)
+    /// * `eos_token` — end-of-sequence token; stops generation when sampled
+    /// * `no_speech_token` — token whose first-step softmax probability signals silence
+    /// * `decode_text` — closure that converts token IDs to a UTF-8 string for compression ratio
+    pub fn decode_with_fallback(
+        &self,
+        token_probs: &[Vec<f32>],
+        initial_token: u32,
+        vocab_size: usize,
+        eos_token: u32,
+        no_speech_token: u32,
+        decode_text: impl Fn(&[u32]) -> String,
+    ) -> Result<Vec<u32>> {
+        if token_probs.is_empty() {
+            return Ok(vec![initial_token]);
+        }
+
+        // No-speech check on first decode step (independent of temperature).
+        if (no_speech_token as usize) < vocab_size {
+            let ns_prob = softmax_at(&token_probs[0], no_speech_token);
+            if ns_prob > self.config.no_speech_threshold {
+                return Ok(vec![]);
+            }
+        }
+
+        let mut best: Option<Vec<u32>> = None;
+
+        for &temp in &self.config.temperatures {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+            let mut tokens = vec![initial_token];
+            let mut log_probs: Vec<f32> = Vec::new();
+
+            for step_logits in token_probs.iter().take(self.config.max_length) {
+                let selected = sample_from_logits(step_logits, temp, &mut rng);
+                log_probs.push(log_softmax_at(step_logits, selected, temp));
+                tokens.push(selected);
+                if selected == eos_token {
+                    break;
+                }
+            }
+
+            let avg_lp = if log_probs.is_empty() {
+                0.0
+            } else {
+                log_probs.iter().sum::<f32>() / log_probs.len() as f32
+            };
+
+            let text = decode_text(&tokens);
+            let cr = compression_ratio(&text);
+
+            let quality_ok = avg_lp > self.config.log_prob_threshold
+                && cr < self.config.compression_ratio_threshold;
+
+            if best.is_none() {
+                best = Some(tokens.clone());
+            }
+
+            if quality_ok {
+                return Ok(tokens);
+            }
+        }
+
+        best.ok_or_else(|| anyhow!("decode_with_fallback: no temperatures configured"))
     }
 }
 
@@ -447,6 +608,102 @@ mod tests {
         assert!(!tokens.is_empty());
         assert_eq!(tokens[0], 100);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_compression_ratio_normal_text() {
+        // Prose compresses to ratio < 2.4 (not a hallucination loop).
+        let text = "The quick brown fox jumps over the lazy dog.";
+        let cr = compression_ratio(text);
+        assert!(cr < 2.4, "normal text compression ratio was {cr}");
+    }
+
+    #[test]
+    fn test_compression_ratio_repetitive_text() {
+        // Hallucination loops repeat the same phrase hundreds of times.
+        // Gzip header overhead is ~20 bytes, so the input must be long enough
+        // for the repetition signal to dominate.
+        let phrase = "the quick brown fox ";
+        let text = phrase.repeat(100); // 2000 chars, highly compressible
+        let cr = compression_ratio(&text);
+        assert!(cr > 2.4, "repetitive text compression ratio was {cr}");
+    }
+
+    #[test]
+    fn test_compression_ratio_empty() {
+        assert_eq!(compression_ratio(""), 0.0);
+    }
+
+    #[test]
+    fn test_softmax_at_picks_max() {
+        let logits = vec![-10.0, -0.1, -5.0];
+        let p_max = softmax_at(&logits, 1);
+        let p_min = softmax_at(&logits, 0);
+        assert!(p_max > p_min, "softmax of max logit should be highest");
+        let total: f32 = (0..3).map(|i| softmax_at(&logits, i)).sum();
+        assert!((total - 1.0).abs() < 1e-4, "softmax probs must sum to 1");
+    }
+
+    #[test]
+    fn test_decode_with_fallback_passes_quality() -> Result<()> {
+        // Token 1 dominates every step → log prob near 0, repetitive text expected.
+        // Use a very lax threshold so it passes immediately.
+        let config = DecodingConfig {
+            temperatures: vec![0.0],
+            log_prob_threshold: -100.0,
+            compression_ratio_threshold: 100.0,
+            no_speech_threshold: 1.0,
+            max_length: 5,
+            ..Default::default()
+        };
+        let decoder = HybridDecoder::new(config);
+
+        let token_probs = vec![
+            vec![-0.01, -10.0, -10.0],
+            vec![-0.01, -10.0, -10.0],
+        ];
+
+        let tokens = decoder.decode_with_fallback(
+            &token_probs,
+            99,
+            3,
+            0,    // eos
+            2,    // no_speech_token (low prob → not triggered)
+            |ids| ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),
+        )?;
+
+        assert!(!tokens.is_empty());
+        assert_eq!(tokens[0], 99);
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_with_fallback_no_speech() -> Result<()> {
+        // Make no_speech_token dominant at step 0 → should return empty Vec.
+        let config = DecodingConfig {
+            temperatures: vec![0.0],
+            no_speech_threshold: 0.5,
+            log_prob_threshold: -100.0,
+            compression_ratio_threshold: 100.0,
+            max_length: 5,
+            ..Default::default()
+        };
+        let decoder = HybridDecoder::new(config);
+
+        // Token 1 has very high logit → softmax ≈ 1.0, well above threshold 0.5.
+        let token_probs = vec![vec![-10.0, 100.0, -10.0]];
+
+        let tokens = decoder.decode_with_fallback(
+            &token_probs,
+            99,
+            3,
+            0,   // eos
+            1,   // no_speech_token = token 1 (dominant)
+            |_| String::new(),
+        )?;
+
+        assert!(tokens.is_empty(), "should return empty when no-speech detected");
         Ok(())
     }
 }
