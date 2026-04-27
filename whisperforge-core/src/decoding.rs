@@ -9,8 +9,8 @@ use std::collections::BinaryHeap;
 pub struct DecodingConfig {
     /// Beam size for beam search (1 = greedy, 5 = default, 10+ = very accurate)
     pub beam_size: usize,
-    /// Temperature for sampling when using temperature fallback (0.0 = greedy)
-    pub temperature: f32,
+    /// Temperature fallback sequence (tried in order; retry at next temp if quality fails)
+    pub temperatures: Vec<f32>,
     /// Length penalty to prevent repeating short sequences (0.0 = no penalty)
     pub length_penalty: f32,
     /// Threshold for no-speech detection based on cross-attention (0.0 to 1.0)
@@ -25,7 +25,7 @@ impl Default for DecodingConfig {
     fn default() -> Self {
         Self {
             beam_size: 5,
-            temperature: 0.5,
+            temperatures: vec![0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
             length_penalty: 1.0,
             no_speech_threshold: 0.6,
             max_length: 448, // Whisper max context
@@ -39,7 +39,7 @@ impl DecodingConfig {
     pub fn fast() -> Self {
         Self {
             beam_size: 1,
-            temperature: 0.0,
+            temperatures: vec![0.0],
             length_penalty: 0.0,
             ..Default::default()
         }
@@ -49,7 +49,7 @@ impl DecodingConfig {
     pub fn balanced() -> Self {
         Self {
             beam_size: 5,
-            temperature: 0.5,
+            temperatures: vec![0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
             length_penalty: 1.0,
             ..Default::default()
         }
@@ -59,7 +59,7 @@ impl DecodingConfig {
     pub fn accurate() -> Self {
         Self {
             beam_size: 10,
-            temperature: 0.3,
+            temperatures: vec![0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
             length_penalty: 1.0,
             ..Default::default()
         }
@@ -71,9 +71,9 @@ impl DecodingConfig {
         self
     }
 
-    /// Set temperature
+    /// Override temperatures with a single value (disables fallback sequence)
     pub fn with_temperature(mut self, temperature: f32) -> Self {
-        self.temperature = temperature.max(0.0);
+        self.temperatures = vec![temperature.max(0.0)];
         self
     }
 
@@ -355,7 +355,7 @@ mod tests {
     fn test_decoding_config_defaults() {
         let config = DecodingConfig::default();
         assert_eq!(config.beam_size, 5);
-        assert_eq!(config.temperature, 0.5);
+        assert_eq!(config.temperatures, vec![0.0, 0.2, 0.4, 0.6, 0.8, 1.0]);
         assert_eq!(config.language, "en");
     }
 
@@ -363,14 +363,20 @@ mod tests {
     fn test_decoding_config_fast() {
         let config = DecodingConfig::fast();
         assert_eq!(config.beam_size, 1);
-        assert_eq!(config.temperature, 0.0);
+        assert_eq!(config.temperatures, vec![0.0]);
     }
 
     #[test]
     fn test_decoding_config_accurate() {
         let config = DecodingConfig::accurate();
         assert_eq!(config.beam_size, 10);
-        assert_eq!(config.temperature, 0.3);
+        assert_eq!(config.temperatures, vec![0.0, 0.2, 0.4, 0.6, 0.8, 1.0]);
+    }
+
+    #[test]
+    fn test_with_temperature_overrides_sequence() {
+        let config = DecodingConfig::default().with_temperature(0.7);
+        assert_eq!(config.temperatures, vec![0.7]);
     }
 
     #[test]
