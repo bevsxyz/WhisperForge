@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use burn::backend::NdArray;
 use burn::tensor::{Int, Tensor};
 use burn_ndarray::NdArrayDevice;
@@ -124,10 +124,10 @@ fn main() -> Result<()> {
     decoding_config = decoding_config.with_language(args.language.clone());
 
     println!(
-        "Decoding config: preset={}, beam_size={}, temperature={}, length_penalty={}",
+        "Decoding config: preset={}, beam_size={}, temperatures={:?}, length_penalty={}",
         args.decoding_preset,
         decoding_config.beam_size,
-        decoding_config.temperature,
+        decoding_config.temperatures,
         decoding_config.length_penalty
     );
 
@@ -201,99 +201,54 @@ fn main() -> Result<()> {
     }
 
     // Start with initial tokens
-    let mut tokens: Vec<u32> = vec![sot, en, transcribe, no_timestamps];
-    println!("Initial tokens: {:?}", tokens);
-    let max_tokens = 224; // Max decoder context is 448, leave room
+    let initial_tokens: Vec<u32> = vec![sot, en, transcribe, no_timestamps];
+    println!("Initial tokens: {:?}", initial_tokens);
 
-    // Decode using selected strategy
-    // Note: Currently using greedy approach in loop for compatibility
-    // Beam search decoder integration coming in next iteration
-    let _decoder = HybridDecoder::new(decoding_config);
+    let decoder = HybridDecoder::new(decoding_config.clone());
+    let vocab_size = 51864usize;
+    let mut context_tokens = initial_tokens.clone();
+    let mut all_step_logits: Vec<Vec<f32>> = Vec::new();
 
-    for step in 0..max_tokens {
-        // Create token tensor
+    println!("Transcribing (max {} tokens)...", decoding_config.max_length);
+
+    for _step in 0..decoding_config.max_length {
         let token_tensor: Tensor<Backend, 2, Int> = Tensor::from_data(
             burn::tensor::TensorData::new(
-                tokens.iter().map(|&t| t as i32).collect::<Vec<_>>(),
-                [1, tokens.len()],
+                context_tokens.iter().map(|&t| t as i32).collect::<Vec<_>>(),
+                [1, context_tokens.len()],
             ),
             &device,
         );
 
-        // Get logits
         let logits = model.forward_decoder(token_tensor, encoder_output.clone());
-        let logits_shape = logits.dims();
+        let [batch, seq_len, _] = logits.dims();
+        let step_probs: Vec<f32> = logits
+            .slice([0..batch, (seq_len - 1)..seq_len, 0..vocab_size])
+            .squeeze::<1>()
+            .into_data()
+            .to_vec()
+            .with_context(|| "Failed to extract step logits")?;
 
-        // Get last token's logits
-        let batch_size = logits_shape[0];
-        let seq_len = logits_shape[1];
-        let vocab_size = logits_shape[2];
-        let last_logits = logits.slice([0..batch_size, (seq_len - 1)..seq_len, 0..vocab_size]);
-        // Shape is [1, 1, 51864] -> squeeze sequence dimension to get [1, 51864]
-        let last_logits = last_logits.squeeze::<1>();
+        // Greedy peek: determine next token for context feeding and EOT detection.
+        let greedy_next = step_probs
+            .iter()
+            .enumerate()
+            .max_by(|(_, a): &(usize, &f32), (_, b)| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i as u32)
+            .unwrap_or(eot);
 
-        // Debug: Analyze logits for first few steps
-        if args.debug_inference && step < 5 {
-            let logits_data = last_logits.to_data();
-            let logits_vec: Vec<f32> = logits_data.to_vec().unwrap();
+        all_step_logits.push(step_probs);
 
-            // Find top 5 tokens and their probabilities
-            let mut token_probs: Vec<(usize, f32)> = logits_vec
-                .iter()
-                .enumerate()
-                .map(|(i, &prob)| (i, prob))
-                .collect();
-            token_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-            println!("\nStep {} logits analysis:", step);
-            println!("  Current tokens: {:?}", &tokens);
-            println!("  Top 5 tokens and probs:");
-            for (i, (token_id, prob)) in token_probs.iter().take(5).enumerate() {
-                let token_str = tokenizer
-                    .decode(&[*token_id as u32], false)
-                    .unwrap_or("<?>".to_string());
-                println!(
-                    "    {}: token={} ({}) prob={:.4}",
-                    i + 1,
-                    token_id,
-                    token_str,
-                    prob
-                );
-            }
-
-            // Check specific tokens
-            let eot_prob = logits_vec[eot as usize];
-            let transcribe_prob = logits_vec[transcribe as usize];
-            println!("  EOT ({}): prob={:.4}", eot, eot_prob);
-            println!("  TRANSCRIBE ({}): prob={:.4}", transcribe, transcribe_prob);
-        }
-
-        let next_token = last_logits.argmax(0).into_scalar() as u32;
-        if args.debug_inference || step < 10 {
-            println!(
-                "Step {}: selected token {} ({})",
-                step,
-                next_token,
-                tokenizer
-                    .decode(&[next_token], false)
-                    .unwrap_or("<?>".to_string())
-            );
-        }
-
-        // For debugging: allow a few steps even with EOT to see if model can generate content
-        if next_token == eot && step > 2 {
-            println!("EOT detected after {} steps, stopping generation", step);
+        if greedy_next == eot {
             break;
         }
-
-        // Safety check: prevent infinite loops
-        if tokens.len() >= 50 {
-            println!("Reached max token limit (50), stopping generation");
-            break;
-        }
-
-        tokens.push(next_token);
+        context_tokens.push(greedy_next);
     }
+
+    // Apply HybridDecoder (beam search with greedy fallback) over collected logits.
+    let tokens: Vec<u32> = decoder.decode(&all_step_logits, no_timestamps, vocab_size, eot, 0)?;
 
     // Remove special tokens and decode
     let output_tokens: Vec<u32> = tokens
