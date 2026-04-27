@@ -1,291 +1,87 @@
-# WhisperForge 🔥
+# WhisperForge
 
-A high-performance Rust rewrite of WhisperX, leveraging the Burn framework for CUDA-accelerated speech transcription with word-level timestamps and speaker diarization.
+A Rust rewrite of WhisperX using [Burn 0.20](https://burn.dev/) for CUDA-accelerated speech transcription with word-level timestamps and speaker diarization.
 
-## Overview
+## Goals
 
-WhisperForge combines the best of Rust's safety and performance with state-of-the-art speech recognition capabilities:
+- SOTA decoding matching faster-whisper (beam search + temperature fallback + quality metrics)
+- All Whisper model sizes (tiny.en through large-v2/v3)
+- Word-level timestamps (<50ms precision via forced alignment)
+- Speaker diarization with speaker labels in SRT/JSON output
+- 8× realtime on CUDA for large-v2; ≤2GB VRAM
 
-- **🚀 8x realtime** transcription on CUDA (large-v2 model)
-- **💾 2GB VRAM** maximum usage (50% reduction vs WhisperX)
-- **⚡ <0.5s startup** time for model loading
-- **🎯 SOTA decoding** strategy from faster-whisper analysis
-- **🗣️ Speaker diarization** with speaker labels
-- **⏱️ Word-level timestamps** with <50ms precision
-- **🛡️ Memory-safe** Rust implementation with zero unsafe in hot paths
+## Current Status
 
-## Technology Stack
+The model architecture, audio pipeline, and beam-search decoders are all implemented. The CLI currently runs a hand-rolled 50-token greedy loop and does not call the actual decoders. See `CLAUDE.md` for the detailed gap analysis and the 7-phase roadmap to close it.
 
-### Core Framework
-- **[Burn 0.20.0](https://burn.dev/)** - ML framework with CUDA backend (primary)
-- **Rust 1.70+** - Memory-safe systems programming language
+| Layer | Status |
+|-------|--------|
+| Whisper model (all sizes) | Complete — frozen in `model.rs` |
+| Audio / mel spectrogram | Complete |
+| Beam search + hybrid decoder | Implemented, not wired to CLI |
+| Model loader (NamedMpk) | Works for `tiny.en`; layer-norm bug blocks other sizes |
+| Model converter (HF → Burn) | Config inference done; tensor mapping incomplete |
+| VAD + segmentation | Implemented in `whisperforge-align`, not integrated |
+| SRT output | Implemented in `whisperforge-align`, not integrated |
+| Word-level timestamps | Not started |
+| CUDA backend | Not started |
+| Speaker diarization | Stub only |
 
-### Audio Processing
-- **rubato** - High-quality audio resampling
-- **hound** - WAV file I/O
-- **ffmpeg-next** - Broad audio format support
+## Tech Stack
 
-### Speech Processing
-- **earshot** - Pure Rust voice activity detection
-- **tokenizers** - Fast BPE tokenization
-- **pyannote-rs** - Speaker diarization (ONNX)
-
-### Utilities
-- **clap** - Command-line argument parsing
-- **anyhow** - Error handling
-- **serde** - JSON serialization
-
-## Project Structure
-
-```
-whisperforge/
-├── whisperforge-core/      # Core Whisper models & SOTA decoding
-│   ├── src/model.rs        # Model architecture (custom attention)
-│   ├── src/audio.rs        # Mel spectrogram computation
-│   ├── src/load.rs         # Model loader (Burn format)
-│   └── src/decoding.rs     # SOTA decoding (🔄 in progress)
-├── whisperforge-align/     # Wav2Vec2 alignment & VAD
-├── whisperforge-diarize/   # Speaker diarization
-├── whisperforge-cli/       # CLI binary & Python API
-├── whisperforge-convert/   # Model conversion (HF → Burn)
-├── AGENTS.md               # AI agent development guidelines
-├── DEVELOPMENT_PLAN.md     # 4-week development roadmap
-└── PROJECT_STATUS.md       # Current progress & next steps
-```
+- **[Burn 0.20](https://burn.dev/)** — ML framework (NdArray CPU now; CUDA in Phase 6)
+- **rubato** — audio resampling
+- **hound** — WAV I/O
+- **tokenizers** — BPE tokenization
+- **earshot** — voice activity detection (imported, not yet wired)
+- **pyannote-rs** — speaker diarization (planned Phase 7)
 
 ## Quick Start
 
-### Build from Source
-
 ```bash
-# Check code compiles
+# Check compilation
 cargo check --all
 
-# Build in debug mode
-cargo build
-
-# Build release binary (optimized for CUDA)
-cargo build --release
-```
-
-### Run Tests
-
-```bash
-# Test core crates (align has pre-existing issues)
+# Tests (always exclude whisperforge-align — known pre-existing failures)
 cargo test -p whisperforge-core -p whisperforge-convert -p whisperforge-cli
 
-# Run single test with output
-cargo test -p whisperforge-core load::tests::test_load_whisper_model -- --nocapture
-```
+# Format + lint
+cargo fmt --all && cargo clippy --all-targets --all-features
 
-### Format & Lint
-
-```bash
-# Format all code
-cargo fmt --all
-
-# Run clippy checks
-cargo clippy --all-targets --all-features
-```
-
-### Run CLI
-
-```bash
-# Transcribe audio (requires converted model)
+# Run CLI (requires converted model files)
 cargo run -p whisperforge-cli -- -a audio.wav -m tiny_en_converted
-
-# With debug output
-cargo run -p whisperforge-cli -- --debug-inference --audio-file audio.wav
 ```
-
-## Development Status
-
-### ✅ Completed
-- Custom attention block architecture
-- OpenAI → Burn 0.20 model converter
-- Model loader with NamedMpk format
-- Audio loading & mel spectrogram computation
-- Basic token generation & CLI interface
-
-### 🔄 In Progress
-- **SOTA Decoding Module** (faster-whisper strategy)
-- Quality metrics (compression ratio, log probability)
-- Beam search with temperature fallback
-
-### ⏳ Planned
-- Voice Activity Detection (VAD) filtering
-- Word-level timestamp extraction
-- Speaker diarization integration
-- Batch processing & optimization
-
-See [PROJECT_STATUS.md](PROJECT_STATUS.md) for detailed progress and [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for full roadmap.
-
-## Key Files Reference
-
-| File | Purpose | Status |
-|------|---------|--------|
-| `whisperforge-core/src/model.rs` | Whisper architecture with custom attention | ✅ Complete |
-| `whisperforge-core/src/load.rs` | Burn model loader | ✅ Complete |
-| `whisperforge-core/src/audio.rs` | Mel spectrogram computation | 🟡 Basic STFT |
-| `whisperforge-core/src/decoding.rs` | SOTA decoding strategy | 🔴 Starting |
-| `whisperforge-convert/src/convert.rs` | HF → Burn model conversion | ✅ Complete |
-| `whisperforge-cli/src/main.rs` | CLI interface | 🟡 Basic working |
-| `AGENTS.md` | AI agent development guide | ✅ Complete |
-| `DEVELOPMENT_PLAN.md` | 4-week development roadmap | ✅ Complete |
-| `PROJECT_STATUS.md` | Current progress & blockers | ✅ Updated |
 
 ## Model Files
 
-Models are excluded from version control (`.gitignore`) but required for development:
-
-```
-models/
-├── tiny_en_converted.mpk       # Burn 0.20 format (converted)
-├── tiny_en_converted.cfg       # Configuration JSON
-└── tokenizer.json              # BPE tokenizer
-```
-
-Download from HuggingFace and convert using `whisperforge-convert` crate.
-
-## SOTA Decoding Strategy
-
-WhisperForge implements the proven decoding strategy from [faster-whisper](https://github.com/guillaumekln/faster-whisper) (SYSTRAN):
-
-```rust
-DecodingConfig {
-    beam_size: 5,                           // Beam search width
-    temperatures: [0.0, 0.2, ..., 1.0],    // Fallback sequence
-    compression_ratio_threshold: 2.4,       // Quality metric
-    log_prob_threshold: -1.0,               // Quality metric
-    no_speech_threshold: 0.6,               // VAD threshold
-}
-```
-
-**Hybrid Strategy**: Start with beam search (temp=0), fallback to temperature sampling if quality metrics fail.
-
-**Quality Assessment**:
-- Compression ratio: `len(text) / len(gzip(text))`
-- Log probability: Average token confidence
-- No-speech probability: Silence detection
-
-## Development Workflow for AI Agents
-
-This project is optimized for Claude CLI / opencode workflows:
-
-1. **Review** [AGENTS.md](AGENTS.md) for coding standards and development guidelines
-2. **Check** [PROJECT_STATUS.md](PROJECT_STATUS.md) for current blockers and next steps
-3. **Reference** [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for feature roadmap
-4. **Use** `.claude/context.md` for quick context loading in Claude CLI
-5. **Follow** [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow
-
-See `.claude/` directory for Claude CLI configuration and prompts.
-
-## Performance Targets
-
-| Model | CUDA Speed | VRAM | Target |
-|-------|-----------|------|--------|
-| tiny.en | 200x realtime | 0.5GB | ✅ |
-| base | 150x realtime | 1GB | ✅ |
-| small | 100x realtime | 2GB | ✅ |
-| medium | 80x realtime | 5GB | 🔄 |
-| large-v2 | **8x realtime** | 2GB | 🎯 |
-
-## Common Commands
+Models are git-ignored. Download from HuggingFace and convert:
 
 ```bash
-# Quick project check
-cargo check --all
-
-# Run all tests (except known failures)
-cargo test -p whisperforge-core -p whisperforge-convert -p whisperforge-cli
-
-# Format and lint
-cargo fmt --all && cargo clippy --all-targets --all-features
-
-# Build optimized release
-cargo build --release
-
-# Generate documentation
-cargo doc --open
-
-# Run specific test with output
-cargo test test_name -- --nocapture
+cargo run -p whisperforge-convert -- --model openai/whisper-tiny.en --output models/tiny_en_converted
 ```
 
-## Error Handling
-
-The codebase uses `anyhow::Result<T>` for application-level errors and propagates context through `.with_context()`:
-
-```rust
-use anyhow::{Context, Result};
-
-pub fn load_audio(path: &str) -> Result<AudioData> {
-    let data = std::fs::read(path)
-        .with_context(|| format!("Failed to read audio file: {}", path))?;
-    // ...
-    Ok(audio)
-}
+Required files per model:
+```
+models/
+├── tiny_en_converted.mpk   # Burn NamedMpk weights
+├── tiny_en_converted.cfg   # JSON config
+└── tokenizer.json          # BPE tokenizer
 ```
 
-## Code Style
+## Architecture
 
-See [AGENTS.md](AGENTS.md) for comprehensive style guidelines. Key points:
+Five-crate workspace:
 
-- **Imports**: std → external crates → local modules
-- **Naming**: `PascalCase` types, `snake_case` functions, `SCREAMING_SNAKE_CASE` constants
-- **Documentation**: Doc comments for all public APIs with examples
-- **Performance**: No clones in hot paths, pre-allocate tensors, use batch operations
-- **Testing**: Unit tests for public functions, integration tests for pipelines
+| Crate | Role |
+|-------|------|
+| `whisperforge-core` | Whisper model, audio, decoding — primary dev area |
+| `whisperforge-cli` | `whisperforge` binary |
+| `whisperforge-convert` | HuggingFace safetensors → Burn NamedMpk conversion |
+| `whisperforge-align` | VAD, segmentation, SRT output |
+| `whisperforge-diarize` | Speaker diarization (placeholder) |
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines, including:
-
-- Development workflow for features and bug fixes
-- Code review expectations
-- Testing requirements
-- Documentation standards
-
-## Architecture Highlights
-
-### Custom Attention Blocks
-The model implements optimized attention mechanisms:
-- Multi-head self-attention in encoder
-- Cross-attention in decoder (encoder-decoder interaction)
-- Position-wise feed-forward networks
-- Layer normalization and residual connections
-
-### Memory Efficiency
-- Tensor views instead of clones
-- Pre-allocated buffers for audio processing
-- Batch operations for parallelization
-- CUDA stream management for concurrent processing
-
-### Type Safety
-- Generic over `Backend` trait for cross-platform support
-- Type aliases for complex tensor shapes
-- Compile-time constraints via const generics
-
-## Known Limitations
-
-- ⚠️ CUDA backend required for performance targets (CPU fallback available but slow)
-- ⚠️ Basic greedy decoding only (SOTA module in progress)
-- ⚠️ Word timestamps not yet extracted from attention patterns
-- ⚠️ Speaker diarization not integrated
-
-## Resources
-
-- **Burn Documentation**: https://burn.dev/
-- **AGENTS.md**: Complete AI agent development guidelines
-- **DEVELOPMENT_PLAN.md**: Detailed 4-week roadmap with SOTA analysis
-- **PROJECT_STATUS.md**: Current progress, blockers, and next steps
+See `CLAUDE.md` for full architecture details, known bugs, hard-won lessons, and the development roadmap.
 
 ## License
 
 [Add your license here]
-
----
-
-**Last Updated**: January 26, 2026  
-**Optimized for**: Claude CLI / opencode AI agents  
-**Current Focus**: SOTA decoding implementation (faster-whisper strategy)
