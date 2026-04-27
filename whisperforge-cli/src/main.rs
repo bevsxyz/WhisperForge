@@ -247,8 +247,16 @@ fn main() -> Result<()> {
         context_tokens.push(greedy_next);
     }
 
-    // Apply HybridDecoder (beam search with greedy fallback) over collected logits.
-    let tokens: Vec<u32> = decoder.decode(&all_step_logits, no_timestamps, vocab_size, eot, 0)?;
+    // Apply quality-gated temperature fallback over collected logits.
+    let no_speech_token = tokenizer.token_to_id("<|nospeech|>").unwrap_or(50362);
+    let tokens: Vec<u32> = decoder.decode_with_fallback(
+        &all_step_logits,
+        no_timestamps,
+        vocab_size,
+        eot,
+        no_speech_token,
+        |ids| tokenizer.decode(ids, false).unwrap_or_default(),
+    )?;
 
     // Remove special tokens and decode
     let output_tokens: Vec<u32> = tokens
