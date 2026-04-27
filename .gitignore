@@ -14,9 +14,8 @@ Cargo.lock
 # Contains mutation testing data
 **/mutants.out*/
 
-# Test data and temporary files
-test_data/
-*.wav
+# Temporary / generated test files (not the committed LJSpeech fixtures)
+*.tmp.wav
 
 # Model files (large binaries)
 models/
