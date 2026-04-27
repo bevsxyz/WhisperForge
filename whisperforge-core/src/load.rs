@@ -118,15 +118,11 @@ pub fn load_whisper<B: Backend>(model_path: &str, device: &B::Device) -> Result<
             )
         })?;
 
-    // Fix: Replace corrupted layer norms with defaults
-    // The converted model has corrupted layer norm parameters that cause EOT domination
-    let default_config = WhisperConfig::tiny_en();
-    let default_model = default_config.init::<B>(device);
-
-    // Replace final decoder layer norm
-    model.decoder.ln = default_model.decoder.ln;
-    // Replace encoder layer norm
-    model.encoder.ln_post = default_model.encoder.ln_post;
+    // Workaround: replace corrupted layer-norm params with fresh defaults using the
+    // config loaded from disk so dims match any model size, not just tiny_en (384).
+    let fresh = config.init::<B>(device);
+    model.decoder.ln = fresh.decoder.ln;
+    model.encoder.ln_post = fresh.encoder.ln_post;
 
     Ok(model)
 }
@@ -161,6 +157,33 @@ mod tests {
             .parent()
             .unwrap()
             .join("models")
+    }
+
+    #[test]
+    #[ignore = "slow: initialises base model (6-layer 512-dim) on NdArray CPU (~10 min)"]
+    fn test_layer_norm_dims_match_loaded_config() {
+        use burn::backend::NdArray;
+        use burn_ndarray::NdArrayDevice;
+
+        let device = NdArrayDevice::default();
+        // base has n_audio_state=512; tiny_en has 384. The bug hardcoded tiny_en, so a base
+        // model would get ln_post with gamma shape [384] instead of [512] and panic on forward.
+        let config = WhisperConfig::base();
+        assert_ne!(
+            config.audio_encoder_config.n_audio_state,
+            WhisperConfig::tiny_en().audio_encoder_config.n_audio_state,
+            "test precondition: base and tiny_en must have different state dims"
+        );
+
+        let mut model = config.init::<NdArray<f32>>(&device);
+        let fresh = config.init::<NdArray<f32>>(&device);
+        model.decoder.ln = fresh.decoder.ln;
+        model.encoder.ln_post = fresh.encoder.ln_post;
+
+        // Encoder forward would panic if ln_post had wrong dims (384 vs expected 512).
+        let mel = burn::tensor::Tensor::<NdArray<f32>, 3>::zeros([1, 80, 3000], &device);
+        let out = model.forward_encoder(mel);
+        assert_eq!(out.dims(), [1, 1500, 512]);
     }
 
     #[test]
