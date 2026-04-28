@@ -48,10 +48,7 @@ fn word_error_rate(hypothesis: &str, reference: &str) -> f32 {
     let normalize = |s: &str| -> Vec<String> {
         s.to_lowercase()
             .split_whitespace()
-            .map(|w| {
-                w.trim_matches(|c: char| !c.is_alphabetic())
-                    .to_string()
-            })
+            .map(|w| w.trim_matches(|c: char| !c.is_alphabetic()).to_string())
             .filter(|w| !w.is_empty())
             .collect()
     };
@@ -95,8 +92,13 @@ fn transcribe(
     audio_path: &str,
     device: &NdArrayDevice,
 ) -> Result<String> {
-    let raw = audio::load_wav_file(audio_path)
-        .with_context(|| format!("loading {audio_path}"))?;
+    let raw = audio::load_wav_file(audio_path).with_context(|| format!("loading {audio_path}"))?;
+    eprintln!(
+        "  [audio] path={audio_path} samples={} sr={} ch={}",
+        raw.samples.len(),
+        raw.sample_rate,
+        raw.channels
+    );
     let mel = audio::compute_mel_spectrogram(&raw, 400, 160, 80, device)?;
 
     // Whisper expects exactly 3000 mel frames (30 s at 100 fps).
@@ -110,6 +112,18 @@ fn transcribe(
     };
 
     let encoder_output = model.forward_encoder(mel);
+    {
+        let data: Vec<f32> = encoder_output.to_data().to_vec().unwrap();
+        let min = data.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max = data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let mean = data.iter().sum::<f32>() / data.len() as f32;
+        let std =
+            (data.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / data.len() as f32).sqrt();
+        eprintln!(
+            "  [encoder] shape={:?} min={min:.4} max={max:.4} mean={mean:.4} std={std:.4}",
+            encoder_output.dims()
+        );
+    }
 
     let tok = |s: &str, fallback: u32| tokenizer.token_to_id(s).unwrap_or(fallback);
     let sot = tok("<|startoftranscript|>", 50258);
@@ -143,12 +157,48 @@ fn transcribe(
             .to_vec()
             .context("extracting step logits")?;
 
-        let greedy_next = step
+        // At step 0: suppress EOT so the model is forced to start generating real tokens.
+        // Collect the unconstrained greedy argmax only for diagnostics; for the actual
+        // context we always use the best non-EOT token at step 0.
+        let unconstrained_greedy = step
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
             .map(|(i, _)| i as u32)
             .unwrap_or(eot);
+
+        let greedy_next = if all_logits.is_empty() && unconstrained_greedy == eot {
+            // EOT would be the first token — suppress it and take the next best.
+            let best_non_eot = step
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i as u32 != eot)
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                .map(|(i, _)| i as u32)
+                .unwrap_or(eot);
+            eprintln!("  [step0] EOT suppressed → using token {best_non_eot}");
+            best_non_eot
+        } else {
+            unconstrained_greedy
+        };
+
+        // Diagnostic: show step-0 token distribution once per clip.
+        if all_logits.is_empty() {
+            let exp_sum: f32 = step.iter().map(|&x| x.exp()).sum();
+            let eot_prob = step[eot as usize].exp() / exp_sum;
+            let ns_prob = if (no_speech as usize) < vocab_size {
+                step[no_speech as usize].exp() / exp_sum
+            } else {
+                0.0
+            };
+            let mut top5: Vec<(usize, f32)> = step.iter().copied().enumerate().collect();
+            top5.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+            top5.truncate(5);
+            eprintln!(
+                "  [step0] greedy={unconstrained_greedy} eot_prob={eot_prob:.4} ns_prob={ns_prob:.4} no_speech_id={no_speech}"
+            );
+            eprintln!("  [step0] top5: {:?}", &top5[..5]);
+        }
 
         all_logits.push(step);
 
@@ -156,6 +206,49 @@ fn transcribe(
             break;
         }
         context.push(greedy_next);
+    }
+
+    // Diagnostic: inspect the greedy sequence before handing to decode_with_fallback.
+    {
+        let greedy_toks = &context[4..]; // strip [sot, en, transcribe, no_timestamps]
+        let hit_eot = greedy_toks.len() < config.max_length;
+        let greedy_text = tokenizer.decode(greedy_toks, false).unwrap_or_default();
+        // Unique-token count: low value signals a repetition loop.
+        let mut sorted = greedy_toks.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let unique = sorted.len();
+        // Average greedy log-prob — below -1.0 will fail decode_with_fallback quality gate.
+        let avg_lp: f32 = all_logits
+            .iter()
+            .zip(greedy_toks.iter().chain(std::iter::once(&eot)))
+            .map(|(step_l, &tok)| {
+                let max = step_l.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let log_sum = max + step_l.iter().map(|&l| (l - max).exp()).sum::<f32>().ln();
+                step_l[tok as usize] - log_sum
+            })
+            .sum::<f32>()
+            / all_logits.len() as f32;
+        eprintln!(
+            "  [greedy] steps={} hit_eot={hit_eot} unique_toks={unique} avg_lp={avg_lp:.4}",
+            all_logits.len()
+        );
+        let preview: String = greedy_text.chars().take(160).collect();
+        eprintln!("  [greedy] text_preview: {preview:?}");
+        eprintln!(
+            "  [greedy] first_15_toks: {:?}",
+            &greedy_toks[..greedy_toks.len().min(15)]
+        );
+    }
+
+    // Mask EOT in step-0 logits so decode_with_fallback also suppresses EOT at the
+    // first position regardless of temperature.  Without this, at temperature < 1.0
+    // the distribution is more peaked at EOT, quality passes immediately, and the
+    // fallback returns an empty sequence.
+    if let Some(first) = all_logits.first_mut() {
+        if (eot as usize) < first.len() {
+            first[eot as usize] = f32::NEG_INFINITY;
+        }
     }
 
     let tokens = decoder.decode_with_fallback(
@@ -190,12 +283,14 @@ fn test_wer_benchmark_tiny_en() {
     }
 
     let device = NdArrayDevice::default();
-    let model =
-        load_whisper::<Backend>(model_path.to_str().unwrap(), &device).expect("load model");
+    let model = load_whisper::<Backend>(model_path.to_str().unwrap(), &device).expect("load model");
     let tokenizer = Tokenizer::from_file(&tokenizer_path).expect("load tokenizer");
 
     let fixtures = load_fixtures();
-    assert!(!fixtures.is_empty(), "no fixtures in test_data/metadata.txt");
+    assert!(
+        !fixtures.is_empty(),
+        "no fixtures in test_data/metadata.txt"
+    );
 
     let mut total_wer = 0.0f32;
     let mut tested = 0usize;
@@ -227,7 +322,10 @@ fn test_wer_benchmark_tiny_en() {
     assert!(tested > 0, "no fixtures could be tested");
 
     let avg_wer = total_wer / tested as f32;
-    eprintln!("\nAverage WER across {tested} clips: {:.1}%", avg_wer * 100.0);
+    eprintln!(
+        "\nAverage WER across {tested} clips: {:.1}%",
+        avg_wer * 100.0
+    );
 
     // tiny.en achieves ~5% WER on LJSpeech clean speech.
     // 20% is the acceptance threshold for the current implementation.
