@@ -68,9 +68,15 @@ impl AudioData {
         // A reasonable chunk size in frames
         let chunk_size = 1024;
 
-        let mut resampler =
-            Async::<f32>::new_sinc(f_ratio, 2.0, &params, chunk_size, 2, FixedAsync::Input)
-                .map_err(|e| anyhow!("Failed to create resampler: {}", e))?;
+        let mut resampler = Async::<f32>::new_sinc(
+            f_ratio,
+            2.0,
+            &params,
+            chunk_size,
+            self.channels as usize,
+            FixedAsync::Input,
+        )
+        .map_err(|e| anyhow!("Failed to create resampler: {}", e))?;
 
         // Convert interleaved samples to multi-channel format for rubato
         let frames_per_channel = self.samples.len() / self.channels as usize;
@@ -91,7 +97,7 @@ impl AudioData {
         let estimated_output_frames = (frames_per_channel as f64 * f_ratio) as usize;
 
         let mut output_channels: Vec<Vec<f32>> =
-            vec![Vec::with_capacity(estimated_output_frames); self.channels as usize];
+            vec![vec![0.0f32; estimated_output_frames]; self.channels as usize];
         let mut output_adapter = SequentialSliceOfVecs::new_mut(
             &mut output_channels,
             self.channels as usize,
@@ -197,7 +203,14 @@ pub fn save_wav_file<P: AsRef<Path>>(audio: &AudioData, path: P) -> Result<()> {
 
 /// Compute mel spectrogram for Whisper model input.
 ///
-/// Returns a tensor of shape [1, n_mels, n_frames] suitable for the Whisper encoder.
+/// Matches OpenAI Whisper's Python preprocessing exactly:
+/// 1. Resample/convert to 16 kHz mono.
+/// 2. Pad (or trim) audio to exactly 30 seconds in **sample** space before the STFT.
+/// 3. Apply `center=True` reflection padding (`n_fft/2` samples each side) so each
+///    STFT frame is centred on its sample — matches `torch.stft` default.
+/// 4. Use power spectrum and Slaney-normalised mel filters.
+///
+/// Always returns a tensor of shape `[1, n_mels, 3000]` (30 s at 100 fps).
 pub fn compute_mel_spectrogram<B: Backend>(
     audio: &AudioData,
     n_fft: usize,
@@ -212,14 +225,42 @@ pub fn compute_mel_spectrogram<B: Backend>(
         audio.clone()
     };
 
-    // Compute STFT magnitude spectrogram
-    let magnitudes = compute_stft_magnitudes(&audio.samples, n_fft, hop_length);
+    // Pad or trim to exactly 30 s in sample space so silence carries the correct
+    // log-mel value (~-1.0) rather than 0.0.
+    let target_samples = 30 * WHISPER_SAMPLE_RATE as usize; // 480000
+    let mut padded_samples = audio.samples.clone();
+    if padded_samples.len() > target_samples {
+        padded_samples.truncate(target_samples);
+    } else {
+        padded_samples.resize(target_samples, 0.0);
+    }
+
+    // center=True STFT (Python torch.stft default): reflect-pad n_fft/2 samples on
+    // each side so each frame is centred on its sample rather than starting there.
+    // For 480000 samples + 400 pad → 3001 STFT frames; we drop the last to match
+    // Python's `magnitudes[..., :-1]` → exactly 3000 frames.
+    let pad_len = n_fft / 2;
+    let n = padded_samples.len();
+    let mut centered_samples = Vec::with_capacity(n + 2 * pad_len);
+    // Reflect-pad start: samples[pad_len], samples[pad_len-1], ..., samples[1]
+    for i in (1..=pad_len).rev() {
+        centered_samples.push(padded_samples[i]);
+    }
+    centered_samples.extend_from_slice(&padded_samples);
+    // Reflect-pad end: samples[n-2], samples[n-3], ..., samples[n-1-pad_len]
+    for i in 0..pad_len {
+        centered_samples.push(padded_samples[n - 2 - i]);
+    }
+
+    // Compute STFT power spectrogram
+    let magnitudes = compute_stft_magnitudes(&centered_samples, n_fft, hop_length);
 
     // Create mel filter bank
     let mel_filters = create_mel_filter_bank(n_fft, n_mels, audio.sample_rate as f32);
 
     // Apply mel filters: [n_mels, n_freqs] @ [n_freqs, n_frames] = [n_mels, n_frames]
-    let n_frames = magnitudes[0].len();
+    // Drop last STFT frame (Python does magnitudes[..., :-1] after center=True STFT).
+    let n_frames = magnitudes[0].len().saturating_sub(1);
     let n_freqs = n_fft / 2 + 1;
 
     let mut mel_spec = vec![vec![0.0f32; n_frames]; n_mels];
@@ -237,10 +278,13 @@ pub fn compute_mel_spectrogram<B: Backend>(
     // Log compression with clamping (Whisper uses log10 with specific scaling)
     let log_spec = log_mel_spectrogram(&mel_spec);
 
-    // Convert to tensor [1, n_mels, n_frames]
-    let flat: Vec<f32> = log_spec.into_iter().flatten().collect();
+    let n_out = n_frames; // callers trim/pad to 3000 after receiving this
+    let flat: Vec<f32> = log_spec
+        .iter()
+        .flat_map(|row| row[..n_out].iter().copied())
+        .collect();
     let tensor = Tensor::<B, 1>::from_floats(flat.as_slice(), device);
-    let tensor = tensor.reshape([1, n_mels, n_frames]);
+    let tensor = tensor.reshape([1, n_mels, n_out]);
 
     Ok(tensor)
 }
@@ -290,72 +334,79 @@ fn compute_stft_magnitudes(samples: &[f32], n_fft: usize, hop_length: usize) -> 
         // Compute FFT in-place
         fft.process(&mut buffer);
 
-        // Extract magnitudes for positive frequencies
+        // Extract power spectrum (magnitude squared) for positive frequencies.
+        // Whisper uses |STFT|^2, not |STFT|.
         for freq in 0..n_freqs {
-            magnitudes[freq][frame_idx] = buffer[freq].norm();
+            magnitudes[freq][frame_idx] = buffer[freq].norm_sqr();
         }
     }
 
     magnitudes
 }
 
-/// Create mel filter bank matrix.
-/// Returns [n_mels][n_freqs] where n_freqs = n_fft/2 + 1
+/// Create mel filter bank matrix matching OpenAI Whisper / librosa defaults.
+///
+/// Uses the Slaney mel scale (linear below 1 kHz, log above) with Slaney
+/// normalization (`2 / (upper_hz - lower_hz)`) and FFT frequencies
+/// `k * sample_rate / n_fft`. This replicates `librosa.filters.mel` exactly.
+///
+/// Returns `[n_mels][n_freqs]` where `n_freqs = n_fft / 2 + 1`.
 fn create_mel_filter_bank(n_fft: usize, n_mels: usize, sample_rate: f32) -> Vec<Vec<f32>> {
     let n_freqs = n_fft / 2 + 1;
     let fmax = sample_rate / 2.0;
 
-    // Convert Hz to mel scale
-    let hz_to_mel = |hz: f32| -> f32 { 2595.0 * (1.0 + hz / 700.0).log10() };
-    let mel_to_hz = |mel: f32| -> f32 { 700.0 * (10.0_f32.powf(mel / 2595.0) - 1.0) };
+    // Slaney mel scale: linear below 1 kHz, log above.
+    let f_sp: f32 = 200.0 / 3.0;
+    let min_log_hz: f32 = 1000.0;
+    let min_log_mel: f32 = min_log_hz / f_sp;
+    let logstep: f32 = 6.4f32.ln() / 27.0;
 
+    let hz_to_mel = |f: f32| -> f32 {
+        if f >= min_log_hz {
+            min_log_mel + (f / min_log_hz).ln() / logstep
+        } else {
+            f / f_sp
+        }
+    };
+    let mel_to_hz = |m: f32| -> f32 {
+        if m >= min_log_mel {
+            min_log_hz * ((m - min_log_mel) * logstep).exp()
+        } else {
+            f_sp * m
+        }
+    };
+
+    // n_mels + 2 equally spaced points in mel space
     let mel_min = hz_to_mel(0.0);
     let mel_max = hz_to_mel(fmax);
-
-    // Create n_mels + 2 equally spaced points in mel scale
-    let mel_points: Vec<f32> = (0..=n_mels + 1)
-        .map(|i| mel_min + (mel_max - mel_min) * i as f32 / (n_mels + 1) as f32)
+    let hz_pts: Vec<f32> = (0..=n_mels + 1)
+        .map(|i| mel_to_hz(mel_min + (mel_max - mel_min) * i as f32 / (n_mels + 1) as f32))
         .collect();
 
-    // Convert back to Hz
-    let hz_points: Vec<f32> = mel_points.iter().map(|&m| mel_to_hz(m)).collect();
-
-    // Convert to FFT bin indices
-    let bin_points: Vec<usize> = hz_points
-        .iter()
-        .map(|&hz| ((n_fft as f32 + 1.0) * hz / sample_rate).floor() as usize)
+    // FFT center frequencies: k * SR / N_FFT  (matches np.fft.rfftfreq)
+    let fftfreqs: Vec<f32> = (0..n_freqs)
+        .map(|k| k as f32 * sample_rate / n_fft as f32)
         .collect();
 
-    // Create triangular filters
     let mut filters = vec![vec![0.0f32; n_freqs]; n_mels];
-
-    for mel in 0..n_mels {
-        let left = bin_points[mel];
-        let center = bin_points[mel + 1];
-        let right = bin_points[mel + 2];
-
-        // Rising slope
-        for k in left..center {
-            if k < n_freqs && center > left {
-                filters[mel][k] = (k - left) as f32 / (center - left) as f32;
-            }
-        }
-
-        // Falling slope
-        for k in center..right {
-            if k < n_freqs && right > center {
-                filters[mel][k] = (right - k) as f32 / (right - center) as f32;
-            }
-        }
-    }
-
-    // Normalize filters (area normalization)
-    for mel in 0..n_mels {
-        let sum: f32 = filters[mel].iter().sum();
-        if sum > 0.0 {
-            for freq in 0..n_freqs {
-                filters[mel][freq] /= sum;
-            }
+    for (i, filt) in filters.iter_mut().enumerate() {
+        let lower = hz_pts[i];
+        let center = hz_pts[i + 1];
+        let upper = hz_pts[i + 2];
+        // Slaney normalization: scale so that the filter sums to 2/(upper-lower)
+        let enorm = 2.0 / (upper - lower).max(1e-8);
+        for (k, &freq) in fftfreqs.iter().enumerate() {
+            let rising = if center > lower {
+                ((freq - lower) / (center - lower)).max(0.0)
+            } else {
+                0.0
+            };
+            let falling = if upper > center {
+                ((upper - freq) / (upper - center)).max(0.0)
+            } else {
+                0.0
+            };
+            filt[k] = rising.min(falling) * enorm;
         }
     }
 
@@ -487,12 +538,18 @@ mod tests {
             }
         }
 
-        // Each filter should sum to approximately 1 (normalized)
+        // Slaney-normalized filters don't sum to 1; they use enorm = 2/(upper_hz-lower_hz).
+        // Just verify each filter has at least one non-zero bin and a reasonable peak value.
         for filter in &filters {
-            let sum: f32 = filter.iter().sum();
+            let max_val = filter.iter().cloned().fold(0.0f32, f32::max);
+            // Peak should be positive (filter covers some FFT bins) and bounded
             assert!(
-                (sum - 1.0).abs() < 0.01 || sum == 0.0,
-                "Filter should be normalized"
+                max_val > 0.0,
+                "Filter should have at least one non-zero bin"
+            );
+            assert!(
+                max_val < 1.0,
+                "Filter peak should be less than 1.0 (Slaney norm)"
             );
         }
     }
@@ -548,13 +605,9 @@ mod tests {
             WHISPER_N_MELS
         );
 
-        // n_frames = (16000 - 400) / 160 + 1 = 98
-        let expected_frames = (16000 - WHISPER_N_FFT) / WHISPER_HOP_LENGTH + 1;
-        assert_eq!(
-            dims[2], expected_frames,
-            "Should have {} frames",
-            expected_frames
-        );
+        // compute_mel_spectrogram always pads to 30 s (480000 samples) with center=True
+        // STFT reflection padding → always returns exactly 3000 mel frames.
+        assert_eq!(dims[2], 3000, "Should always return 3000 mel frames");
     }
 
     #[test]
