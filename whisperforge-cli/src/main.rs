@@ -3,6 +3,7 @@ use burn::backend::NdArray;
 use burn::tensor::{Int, Tensor};
 use burn_ndarray::NdArrayDevice;
 use clap::Parser;
+use std::io::Write;
 use tokenizers::Tokenizer;
 use whisperforge_core::{audio, load_whisper, DecodingConfig, HybridDecoder, Whisper};
 
@@ -209,9 +210,13 @@ fn main() -> Result<()> {
     let mut context_tokens = initial_tokens.clone();
     let mut all_step_logits: Vec<Vec<f32>> = Vec::new();
 
-    println!("Transcribing (max {} tokens)...", decoding_config.max_length);
+    let generation_budget = decoding_config
+        .max_length
+        .saturating_sub(initial_tokens.len());
+    println!("Transcribing (max {} tokens)...", generation_budget);
+    print!(">>> ");
 
-    for _step in 0..decoding_config.max_length {
+    for _step in 0..generation_budget {
         let token_tensor: Tensor<Backend, 2, Int> = Tensor::from_data(
             burn::tensor::TensorData::new(
                 context_tokens.iter().map(|&t| t as i32).collect::<Vec<_>>(),
@@ -244,8 +249,18 @@ fn main() -> Result<()> {
         if greedy_next == eot {
             break;
         }
+
+        // Stream each token to stdout as it's generated.
+        if greedy_next < 50257 {
+            if let Ok(word) = tokenizer.decode(&[greedy_next], false) {
+                print!("{}", word);
+                std::io::stdout().flush().ok();
+            }
+        }
+
         context_tokens.push(greedy_next);
     }
+    println!();
 
     // Apply quality-gated temperature fallback over collected logits.
     let no_speech_token = tokenizer.token_to_id("<|nospeech|>").unwrap_or(50362);
