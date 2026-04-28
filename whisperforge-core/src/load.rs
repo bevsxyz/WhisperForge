@@ -108,7 +108,7 @@ pub fn load_whisper<B: Backend>(model_path: &str, device: &B::Device) -> Result<
     // Remove .mpk extension for load_file (it adds it automatically)
     let weights_path_str = base_path.to_str().context("Invalid model path encoding")?;
 
-    let mut model = model
+    let model = model
         .load_file(weights_path_str, &recorder, device)
         .map_err(|e| {
             anyhow::anyhow!(
@@ -117,12 +117,6 @@ pub fn load_whisper<B: Backend>(model_path: &str, device: &B::Device) -> Result<
                 e
             )
         })?;
-
-    // Workaround: replace corrupted layer-norm params with fresh defaults using the
-    // config loaded from disk so dims match any model size, not just tiny_en (384).
-    let fresh = config.init::<B>(device);
-    model.decoder.ln = fresh.decoder.ln;
-    model.encoder.ln_post = fresh.encoder.ln_post;
 
     Ok(model)
 }

@@ -353,14 +353,13 @@ fn load_encoder<B: Backend>(
     }
 
     // Load ln_post (encoder.layer_norm)
-    // NOTE: Skipping encoder layer norm loading due to potential corruption
-    // let ln_post_weight = tensors
-    //     .get("encoder.layer_norm.weight")
-    //     .context("Missing encoder.layer_norm.weight")?;
-    // let ln_post_bias = tensors
-    //     .get("encoder.layer_norm.bias")
-    //     .context("Missing encoder.layer_norm.bias")?;
-    // encoder.ln_post = load_layer_norm(&encoder.ln_post, ln_post_weight, ln_post_bias, device);
+    let ln_post_weight = tensors
+        .get("encoder.layer_norm.weight")
+        .context("Missing encoder.layer_norm.weight")?;
+    let ln_post_bias = tensors
+        .get("encoder.layer_norm.bias")
+        .context("Missing encoder.layer_norm.bias")?;
+    encoder.ln_post = load_layer_norm(&encoder.ln_post, ln_post_weight, ln_post_bias, device);
 
     println!("Encoder weights loaded successfully");
 
@@ -535,7 +534,13 @@ fn load_decoder<B: Backend>(
     }
 
     // Load ln (decoder.layer_norm)
-    // Skip loading corrupted final decoder layer norm - will be replaced at load time
+    let ln_weight = tensors
+        .get("decoder.layer_norm.weight")
+        .context("Missing decoder.layer_norm.weight")?;
+    let ln_bias = tensors
+        .get("decoder.layer_norm.bias")
+        .context("Missing decoder.layer_norm.bias")?;
+    decoder.ln = load_layer_norm(&decoder.ln, ln_weight, ln_bias, device);
 
     Ok(decoder)
 }
