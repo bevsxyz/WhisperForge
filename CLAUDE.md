@@ -8,20 +8,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Check compilation
 cargo check --all
 
-# Tests — ALWAYS exclude whisperforge-align (has known pre-existing failures)
-cargo test -p whisperforge-core -p whisperforge-convert -p whisperforge-cli
+# Tests — ALWAYS use --release and exclude whisperforge-align (has known pre-existing failures)
+# Debug builds are unusably slow: NdArray CPU decoder forward pass is 30s+ per step unoptimized.
+cargo test --release -p whisperforge-core -p whisperforge-convert -p whisperforge-cli
 
 # Single test with output
-cargo test -p whisperforge-core load::tests::test_load_whisper_model -- --nocapture --exact
+cargo test --release -p whisperforge-core load::tests::test_load_whisper_model -- --nocapture --exact
 
 # Format + lint (run before every commit)
 cargo fmt --all && cargo clippy --all-targets --all-features
 
 # Run the CLI
-cargo run -p whisperforge-cli -- -a audio.wav -m tiny_en_converted
+cargo run --release -p whisperforge-cli -- -a audio.wav -m tiny_en_converted
 
 # Backtrace on failure
-RUST_BACKTRACE=1 cargo test test_name -- --nocapture
+RUST_BACKTRACE=1 cargo test --release test_name -- --nocapture
 ```
 
 Model files (`.mpk`, `.cfg`, tokenizer) are git-ignored. Download from HuggingFace and convert with `whisperforge-convert`.
@@ -41,14 +42,19 @@ Five-crate Rust workspace using [Burn 0.20](https://burn.dev/) for CUDA-accelera
 ### Data flow
 
 ```
-Audio → FFmpeg/hound load → resample to 16 kHz mono
-  → Mel spectrogram (STFT: N_FFT=400, hop=160, n_mels=80)  →  [1, 80, 3000]
+Audio → hound load (i16 → f32 via /i16::MAX) → resample to 16 kHz mono
+  → zero-pad or truncate to exactly 480 000 samples (30 s at 16 kHz)
+  → center=True reflect-pad n_fft/2=200 samples each end  →  480 400 samples
+  → STFT: N_FFT=400, hop=160, Hann window  →  power spectrum |STFT|² (NOT |STFT|)
+  → drop last frame (matches Python magnitudes[..., :-1])  →  3001 → 3000 frames
+  → Slaney mel filter bank (NOT HTK): linear below 1 kHz, log above, enorm normalised
+  → log10 mel + clamp to max-8 dB  →  [1, 80, 3000]
   → Encoder: Conv1d stem (stride-2 halves time to 1500) → n_audio_layer transformer blocks
   → Decoder: n_text_layer transformer blocks (masked self-attn → cross-attn → MLP)
-  → HybridDecoder (beam search + temperature fallback) → decoded text
+  → HybridDecoder (quality-gated temperature fallback) → decoded text
 
 [Current reality: the CLI still runs a hand-rolled greedy loop capped at 50 tokens.
- Phase 1 of the roadmap replaces this with the actual HybridDecoder.]
+ Phase 1 item 2 of the roadmap replaces this with the actual HybridDecoder.]
 ```
 
 Layer counts vary by model size — **"16 layers" mentioned in older docs is wrong**:
@@ -86,15 +92,39 @@ All model types are generic over `B: Backend`. Default alias is `NdArray<f32>` (
 
 After loading weights, the function replaces the decoder's final `ln` and encoder's `ln_post` with freshly-initialised defaults sourced from `WhisperConfig::tiny_en()`. This is a workaround for corrupted layer-norm parameters in the converted model. It is **hardcoded to tiny_en dimensions** — loading `base`, `medium`, or `large-v2` will silently inject wrong layer-norm parameters. Fix this before supporting multi-model loading.
 
-## Decoding: current state vs plan
+## Decoding: current state
 
-`decoding.rs` has `BeamSearchDecoder` and `HybridDecoder` (falls back to greedy on beam failure), but the full faster-whisper SOTA strategy is not yet wired in. Missing:
+`decoding.rs` is fully implemented through Phase 2. `HybridDecoder.decode_with_fallback()` runs the complete faster-whisper SOTA strategy:
 
-- Temperature fallback sequence `[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]` — `DecodingConfig` has a single `temperature` scalar.
-- Quality metrics — `compression_ratio_threshold` and `log_prob_threshold` are not in `DecodingConfig`; add `flate2` for the compression ratio (`len(text) / len(gzip(text))`).
-- The CLI greedy loop needs to be replaced with a call to `HybridDecoder` and the 50-token cap raised to `max_length`.
+- `temperatures: Vec<f32>` — defaults to `[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]` ✅
+- `compression_ratio_threshold: f32` (2.4) via `flate2` gzip ✅
+- `log_prob_threshold: f32` (-1.0) ✅
+- `no_speech_threshold: f32` (0.6) ✅
+- Quality-gated temperature fallback loop ✅
+- LJSpeech WER benchmark — 0.8% average WER on `tiny.en` ✅
+
+**Still unwired in the CLI** (Phase 1 items 1–2):
+
+- `whisperforge-cli/src/main.rs` lines 217–260: hand-rolled greedy loop capped at 50 tokens — `HybridDecoder` is instantiated but never called. Replace with `decoder.decode_with_fallback(...)`.
+- `load_whisper` layer-norm defaults hardcoded to `tiny_en` — fix before multi-model support.
 
 ## Hard-won lessons
+
+### Mel spectrogram: use power spectrum, not magnitude
+
+`|STFT|²` (`norm_sqr()`) is required — Whisper's log-mel formula expects power. Using `norm()` (magnitude) produces spectrograms that are √-scaled relative to reference, causing the model to output near-silence predictions or EOT domination. This single change dropped WER from ~100% to ~40%.
+
+### Mel filter bank: Slaney scale, not HTK
+
+Python `librosa`/Whisper uses the Slaney mel scale: linear below 1 kHz (`f / (200/3)`), logarithmic above (`min_log_mel + ln(f/1000) / logstep` where `logstep = ln(6.4)/27`). **Not** HTK (`2595 * log10(1 + f/700)`). Also apply Slaney triangle normalisation: `enorm = 2 / (upper_hz - lower_hz)` per filter — filters do **not** sum to 1.0. Using HTK gives measurably different filter shapes and degrades WER.
+
+### center=True STFT reflection padding (matches Python default)
+
+`torch.stft` defaults to `center=True`: reflect-pad `n_fft/2 = 200` samples on each side before the STFT, then drop the last output frame (`magnitudes[..., :-1]`). Left pad: `samples[200], samples[199], ..., samples[1]`. Right pad (for 480 000-sample input): `samples[479998], ..., samples[479799]`. Without this, the first and last audio frames are windowed against zeros rather than reflected signal, and frame count differs from the Python pipeline.
+
+### EOT suppression at step 0 is required
+
+When the model has high confidence in `<|endoftext|>` as its first generated token (often seen on clean speech), the greedy loop exits immediately with zero text logits. `decode_with_fallback` then passes the quality gate on the empty sequence (avg log-prob ≈ log(p_eot) > -1.0) and returns nothing. Fix: at step 0 only, if the greedy argmax is EOT, take the next-best non-EOT token instead. Also mask EOT to `−∞` in `all_logits[0]` before passing to `decode_with_fallback` so the fallback sees the same suppression at every temperature.
 
 ### Cross-attention weight names in model conversion
 
@@ -131,37 +161,40 @@ fix: use loaded model config for layer-norm defaults in load_whisper
 ```
 feat: wire HybridDecoder into CLI replacing hand-rolled greedy loop
 ```
-- `whisperforge-cli/src/main.rs`: delete lines 213–296, call `decoder.decode(encoder_output, ...)`, rename `_decoder` → `decoder`, raise the token cap from 50 to `decoding_config.max_length`.
+- `whisperforge-cli/src/main.rs`: delete the hand-rolled loop (lines 217–260), call `decoder.decode_with_fallback(...)`, rename `_decoder` → `decoder`, raise the token cap from 50 to `decoding_config.max_length`.
 
 ```
-feat: replace temperature scalar with fallback sequence in DecodingConfig
+✅ feat: replace temperature scalar with fallback sequence in DecodingConfig
 ```
-- `whisperforge-core/src/decoding.rs`: change `temperature: f32` to `temperatures: Vec<f32>`, default `[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]`. Update all callers.
+- Done: `temperatures: Vec<f32>` defaulting to `[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]` is in `decoding.rs`.
 
 After phase 1: `tiny.en` produces full-length transcripts driven by beam search.
 
-### Phase 2 — SOTA Decoding
+### Phase 2 — SOTA Decoding ✅ COMPLETE
 Quality-gated temperature fallback — the key differentiator of faster-whisper.
 
 ```
-feat: add compression ratio quality metric to DecodingConfig
+✅ feat: add compression ratio quality metric to DecodingConfig
 ```
-- Add `flate2` to `whisperforge-core/Cargo.toml`. Implement `fn compression_ratio(text: &str) -> f32` (`text.len() as f32 / gzip(text).len() as f32`). Add `compression_ratio_threshold: f32` (default 2.4) to `DecodingConfig`.
+- Done: `flate2` added, `compression_ratio()` implemented, `compression_ratio_threshold: f32` (2.4) in `DecodingConfig`.
 
 ```
-feat: add log probability and no-speech quality metrics
+✅ feat: add log probability and no-speech quality metrics
 ```
-- Add `log_prob_threshold: f32` (-1.0) and `no_speech_threshold: f32` (0.6) to `DecodingConfig`. Extract average log-prob from token scores; extract no-speech probability from the `<|nospeech|>` token's first-step logit.
+- Done: `log_prob_threshold: f32` (-1.0) and `no_speech_threshold: f32` (0.6) in `DecodingConfig`.
 
 ```
-feat: implement temperature fallback loop in HybridDecoder
+✅ feat: implement temperature fallback loop in HybridDecoder
 ```
-- Loop over `temperatures` in `HybridDecoder`. After each attempt: compute `compression_ratio`, `avg_log_prob`, `no_speech_prob`. Return empty string early if `no_speech_prob > threshold`. Retry at next temperature if quality below threshold. Return best result on exhaustion.
+- Done: `decode_with_fallback()` loops over temperatures with quality gating.
 
 ```
-test: benchmark SOTA decoding against OpenAI Whisper reference output
+✅ test: benchmark SOTA decoding against LJSpeech reference transcriptions
 ```
-- Commit a handful of short Common Voice audio fixtures + their reference transcripts. Assert WER is within an acceptable delta vs. OpenAI Whisper Python output on the same clips.
+- Done: `whisperforge-core/tests/wer_benchmark.rs` with LJSpeech fixtures. Average WER 0.8% on `tiny.en` (threshold 20%).
+
+Also completed as prerequisite (not in original roadmap):
+- `fix: mel spectrogram preprocessing to match Python Whisper exactly` — power spectrum (`norm_sqr`), Slaney mel scale + normalisation, 30s sample padding, center=True reflection padding, drop last STFT frame.
 
 After phase 2: decoding quality matches faster-whisper on standard benchmarks.
 
