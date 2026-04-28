@@ -235,7 +235,7 @@ fn main() -> Result<()> {
             .with_context(|| "Failed to extract step logits")?;
 
         // Greedy peek: determine next token for context feeding and EOT detection.
-        let greedy_next = step_probs
+        let unconstrained_greedy = step_probs
             .iter()
             .enumerate()
             .max_by(|(_, a): &(usize, &f32), (_, b)| {
@@ -243,6 +243,23 @@ fn main() -> Result<()> {
             })
             .map(|(i, _)| i as u32)
             .unwrap_or(eot);
+
+        // At step 0, suppress EOT: if the model immediately predicts EOT, the
+        // greedy loop exits with no logits, decode_with_fallback passes the
+        // quality gate on an empty sequence, and returns nothing.
+        let greedy_next = if all_step_logits.is_empty() && unconstrained_greedy == eot {
+            step_probs
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i as u32 != eot)
+                .max_by(|(_, a): &(usize, &f32), (_, b)| {
+                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i as u32)
+                .unwrap_or(eot)
+        } else {
+            unconstrained_greedy
+        };
 
         all_step_logits.push(step_probs);
 
@@ -261,6 +278,14 @@ fn main() -> Result<()> {
         context_tokens.push(greedy_next);
     }
     println!();
+
+    // Mask EOT in step-0 logits so decode_with_fallback also suppresses it at
+    // every temperature, not just the greedy pass above.
+    if let Some(first) = all_step_logits.first_mut() {
+        if (eot as usize) < first.len() {
+            first[eot as usize] = f32::NEG_INFINITY;
+        }
+    }
 
     // Apply quality-gated temperature fallback over collected logits.
     let no_speech_token = tokenizer.token_to_id("<|nospeech|>").unwrap_or(50362);
