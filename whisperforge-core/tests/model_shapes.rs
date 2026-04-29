@@ -61,3 +61,12 @@ fn test_model_configs_have_distinct_state_dims() {
         small.audio_encoder_config.n_audio_state
     );
 }
+
+#[test]
+fn test_large_v2_config_has_128_mels() {
+    // medium and large-v2 require too much RAM/time for CI — excluded from weight-loading tests.
+    // This test validates their config constants remain correct without loading any weights.
+    let lv2 = WhisperConfig::large_v2();
+    assert_eq!(lv2.audio_encoder_config.n_mels, 128);
+    assert_eq!(lv2.audio_encoder_config.n_audio_state, 1280);
+}

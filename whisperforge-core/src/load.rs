@@ -228,4 +228,70 @@ mod tests {
             }
         }
     }
+
+    /// Load base weights (6-layer, n_audio_state=512) and verify encoder output shape.
+    ///
+    /// Run locally with model files present:
+    /// `cargo test --release -p whisperforge-core -- --ignored test_load_base_model_and_encoder_forward --nocapture`
+    ///
+    /// medium and large-v2 are excluded from CI (too large for automated test infra).
+    #[test]
+    #[ignore = "requires models/base_converted.{mpk,cfg} — git-ignored; convert from HuggingFace first"]
+    fn test_load_base_model_and_encoder_forward() -> Result<()> {
+        use burn::backend::NdArray;
+        use burn_ndarray::NdArrayDevice;
+
+        let model_path = models_dir().join("base_converted");
+        if !model_path.with_extension("mpk").exists() {
+            eprintln!(
+                "Skipping: {:?}.mpk not found. Convert from HuggingFace first.",
+                model_path
+            );
+            return Ok(());
+        }
+
+        let device = NdArrayDevice::default();
+        let m = load_whisper::<NdArray<f32>>(model_path.to_str().unwrap(), &device)?;
+        assert_eq!(m.encoder.n_mels, 80);
+
+        let mel = burn::tensor::Tensor::<NdArray<f32>, 3>::zeros([1, 80, 3000], &device);
+        let out = m.forward_encoder(mel);
+        // base: n_audio_ctx=1500, n_audio_state=512
+        assert_eq!(out.dims(), [1, 1500, 512]);
+
+        Ok(())
+    }
+
+    /// Load small weights (12-layer, n_audio_state=768) and verify encoder output shape.
+    ///
+    /// Run locally with model files present:
+    /// `cargo test --release -p whisperforge-core -- --ignored test_load_small_model_and_encoder_forward --nocapture`
+    ///
+    /// medium and large-v2 are excluded from CI (too large for automated test infra).
+    #[test]
+    #[ignore = "requires models/small_converted.{mpk,cfg} — git-ignored; convert from HuggingFace first"]
+    fn test_load_small_model_and_encoder_forward() -> Result<()> {
+        use burn::backend::NdArray;
+        use burn_ndarray::NdArrayDevice;
+
+        let model_path = models_dir().join("small_converted");
+        if !model_path.with_extension("mpk").exists() {
+            eprintln!(
+                "Skipping: {:?}.mpk not found. Convert from HuggingFace first.",
+                model_path
+            );
+            return Ok(());
+        }
+
+        let device = NdArrayDevice::default();
+        let m = load_whisper::<NdArray<f32>>(model_path.to_str().unwrap(), &device)?;
+        assert_eq!(m.encoder.n_mels, 80);
+
+        let mel = burn::tensor::Tensor::<NdArray<f32>, 3>::zeros([1, 80, 3000], &device);
+        let out = m.forward_encoder(mel);
+        // small: n_audio_ctx=1500, n_audio_state=768
+        assert_eq!(out.dims(), [1, 1500, 768]);
+
+        Ok(())
+    }
 }
