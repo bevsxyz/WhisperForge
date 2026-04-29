@@ -79,18 +79,19 @@ All model types are generic over `B: Backend`. Default alias is `NdArray<f32>` (
 
 ### CLI decoding (`whisperforge-cli/src/main.rs`)
 
-`HybridDecoder` is instantiated but assigned to `_decoder` and **never called**. The actual token generation (lines 213–296) is a hand-rolled greedy loop capped at **50 tokens**, regardless of `DecodingConfig.max_length = 448`. The `--decoding-preset`, `--beam-size`, and `--temperature` flags build a `DecodingConfig` but it has no effect on output today.
+The greedy loop collects per-step logits up to `decoding_config.max_length` tokens, then passes them to `HybridDecoder.decode_with_fallback()` for quality-gated temperature fallback. EOT is suppressed at step 0 so the model always generates at least one text token. `--decoding-preset`, `--beam-size`, `--temperature`, and `--length-penalty` all take effect.
 
-`--vad-enabled` / `--vad-threshold` exist as CLI args and print a message, but **no VAD runs**.
+`--vad-enabled` / `--vad-threshold` exist as CLI args and print a message, but **no VAD runs** (Phase 3 item 3).
 
 ### Unimplemented scaffolding
 
 - `WhisperInference<B>` trait in `lib.rs` — defined, never implemented for `Whisper<B>`.
 - `TranscriptionSegment` / `TranscriptionResult` in `lib.rs` — defined, never populated by the CLI (it returns plain `String`).
+- `BatchedTranscriber` in `whisperforge-align` — stub that returns placeholder text; real transcription not wired.
 
-### Known bug in `load_whisper` (`whisperforge-core/src/load.rs:121–129`)
+### Long audio limitation
 
-After loading weights, the function replaces the decoder's final `ln` and encoder's `ln_post` with freshly-initialised defaults sourced from `WhisperConfig::tiny_en()`. This is a workaround for corrupted layer-norm parameters in the converted model. It is **hardcoded to tiny_en dimensions** — loading `base`, `medium`, or `large-v2` will silently inject wrong layer-norm parameters. Fix this before supporting multi-model loading.
+The CLI pads/truncates audio to exactly 30 s before the encoder, so audio longer than 30 s is silently truncated. Phase 3 item 4 adds chunked transcription with overlap.
 
 ## Decoding: current state
 
@@ -102,11 +103,7 @@ After loading weights, the function replaces the decoder's final `ln` and encode
 - `no_speech_threshold: f32` (0.6) ✅
 - Quality-gated temperature fallback loop ✅
 - LJSpeech WER benchmark — 0.8% average WER on `tiny.en` ✅
-
-**Still unwired in the CLI** (Phase 1 items 1–2):
-
-- `whisperforge-cli/src/main.rs` lines 217–260: hand-rolled greedy loop capped at 50 tokens — `HybridDecoder` is instantiated but never called. Replace with `decoder.decode_with_fallback(...)`.
-- `load_whisper` layer-norm defaults hardcoded to `tiny_en` — fix before multi-model support.
+- CLI wired to `decode_with_fallback`, EOT suppressed at step 0 ✅
 
 ## Hard-won lessons
 
@@ -150,25 +147,25 @@ Seven phases toward WhisperX feature parity in Rust. Work phases in order — ea
 
 Each entry below is a single commit. Every commit must leave `cargo check --all` clean and the test suite passing before it lands.
 
-### Phase 1 — Integration
+### Phase 1 — Integration ✅ COMPLETE
 Wire up code that already exists but isn't called. No new algorithms.
 
 ```
-fix: use loaded model config for layer-norm defaults in load_whisper
+✅ fix: use loaded model config for layer-norm defaults in load_whisper
 ```
-- `whisperforge-core/src/load.rs:121–129`: replace hardcoded `WhisperConfig::tiny_en()` with the config that was just loaded from disk. Add a test asserting the layer-norm dims match the loaded model. This is the gate for all multi-model work.
+- Done: `load.rs` reads config from disk and passes it to `config.init()`. No hardcoded `tiny_en()` fallback.
 
 ```
-feat: wire HybridDecoder into CLI replacing hand-rolled greedy loop
+✅ feat: wire HybridDecoder into CLI replacing hand-rolled greedy loop
 ```
-- `whisperforge-cli/src/main.rs`: delete the hand-rolled loop (lines 217–260), call `decoder.decode_with_fallback(...)`, rename `_decoder` → `decoder`, raise the token cap from 50 to `decoding_config.max_length`.
+- Done: CLI collects greedy logits (up to `max_length`), suppresses EOT at step 0, then calls `decoder.decode_with_fallback(...)`.
 
 ```
 ✅ feat: replace temperature scalar with fallback sequence in DecodingConfig
 ```
 - Done: `temperatures: Vec<f32>` defaulting to `[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]` is in `decoding.rs`.
 
-After phase 1: `tiny.en` produces full-length transcripts driven by beam search.
+After phase 1: `tiny.en` produces full-length transcripts driven by quality-gated temperature fallback.
 
 ### Phase 2 — SOTA Decoding ✅ COMPLETE
 Quality-gated temperature fallback — the key differentiator of faster-whisper.
@@ -201,9 +198,9 @@ After phase 2: decoding quality matches faster-whisper on standard benchmarks.
 ### Phase 3 — Multi-model + VAD
 
 ```
-feat: complete tensor name mapping in whisperforge-convert
+✅ feat: complete tensor name mapping in whisperforge-convert
 ```
-- `whisperforge-convert/src/convert.rs`: finish `load_encoder()` and `load_decoder()`. Key mapping: OpenAI `decoder.layers.X.encoder_attn.*` → Burn `blocks.X.cross_attn.*`. Run `cargo run -p whisperforge-convert` on `base` and verify no pathological outputs.
+- Done: `convert.rs` maps `decoder.layers.X.encoder_attn.*` → `block.cross_attn.*` and handles all encoder/decoder layers for any model size.
 
 ```
 test: verify base and small model loading and forward pass
