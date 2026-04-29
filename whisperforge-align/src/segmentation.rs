@@ -260,4 +260,40 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_segment_detects_speech_in_synthetic_audio() -> Result<()> {
+        use whisperforge_core::audio::AudioData;
+
+        let sr = 16000u32;
+        // 2 s of 440 Hz sine (speech proxy) followed by 1 s of silence
+        let mut samples: Vec<f32> = (0..(2 * sr as usize))
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sr as f32).sin() * 0.3)
+            .collect();
+        samples.extend(vec![0.0f32; sr as usize]);
+
+        let audio = AudioData {
+            samples,
+            sample_rate: sr,
+            channels: 1,
+        };
+
+        // Use a permissive threshold and short min-length so the 2 s sine burst is detected.
+        let segmenter = AudioSegmenter::new(sr)
+            .with_vad_threshold(0.3)
+            .with_min_segment_length(0.5);
+
+        let segs = segmenter.segment(&audio)?;
+
+        assert!(!segs.is_empty(), "should detect at least one voice segment");
+        assert!(
+            segs[0].start_time < 0.5,
+            "first segment should start near the beginning"
+        );
+        assert!(
+            segs[0].end_time > 1.0,
+            "first segment should cover most of the sine burst"
+        );
+        Ok(())
+    }
 }

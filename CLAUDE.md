@@ -81,7 +81,7 @@ All model types are generic over `B: Backend`. Default alias is `NdArray<f32>` (
 
 The greedy loop collects per-step logits up to `decoding_config.max_length` tokens, then passes them to `HybridDecoder.decode_with_fallback()` for quality-gated temperature fallback. EOT is suppressed at step 0 so the model always generates at least one text token. `--decoding-preset`, `--beam-size`, `--temperature`, and `--length-penalty` all take effect.
 
-`--vad-enabled` / `--vad-threshold` exist as CLI args and print a message, but **no VAD runs** (Phase 3 item 3).
+`--vad-enabled` / `--vad-threshold` are fully wired. When `--vad-enabled`, `AudioSegmenter` (which delegates to `VoiceActivityDetector::detect()`) segments audio into voice spans; silence is skipped; segments feed the transcription loop with accurate timestamps.
 
 ### Unimplemented scaffolding
 
@@ -157,7 +157,7 @@ Each entry below is a single commit. Every commit must leave `cargo check --all`
 ### Phase 2 — SOTA Decoding ✅ COMPLETE
 Compression ratio, log-prob, no-speech quality gates; `decode_with_fallback()` temperature loop; mel preprocessing matched to Python Whisper (power spectrum, Slaney scale, center padding). WER 0.8% on `tiny.en`. See git log.
 
-### Phase 3 — Multi-model + VAD
+### Phase 3 — Multi-model + VAD ✅ COMPLETE
 
 ```
 ✅ feat: complete tensor name mapping in whisperforge-convert
@@ -165,14 +165,14 @@ Compression ratio, log-prob, no-speech quality gates; `decode_with_fallback()` t
 - Done: `convert.rs` maps `decoder.layers.X.encoder_attn.*` → `block.cross_attn.*` and handles all encoder/decoder layers for any model size.
 
 ```
-test: verify base and small model loading and forward pass
+✅ test: verify base and small model loading and forward pass
 ```
-- Integration tests that load `base` and `small` weights, run the encoder on a synthetic mel spectrogram, and assert output shape. Document that `medium`/`large-v2` are excluded from CI (too large for automated test infra).
+- Done: `#[ignore]` integration tests in `load.rs` exercise `load_whisper()` for base (512-dim) and small (768-dim), guarded against missing model files. `model_shapes.rs` adds `test_large_v2_config_has_128_mels` to document CI exclusion of medium/large-v2.
 
 ```
-feat: wire VoiceActivityDetector into CLI pipeline
+✅ feat: wire VoiceActivityDetector into CLI pipeline
 ```
-- `whisperforge-cli/src/main.rs`: add `whisperforge-align` as a dependency. When `--vad-enabled`, call `VoiceActivityDetector::detect()`, feed voice segments to the transcription loop, skip silence spans.
+- Done: `whisperforge-cli` depends on `whisperforge-align`. When `--vad-enabled`, `AudioSegmenter` (wrapping `VoiceActivityDetector::detect()`) produces voice spans; silence is skipped; segments flow to the transcription loop with accurate timestamps. Functional tests added to `vad.rs` and `segmentation.rs`.
 
 ```
 ✅ feat: 30-second chunked transcription with overlap for long audio

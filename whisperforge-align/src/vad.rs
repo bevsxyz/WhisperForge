@@ -225,4 +225,26 @@ mod tests {
         assert!(segment.is_transcribable(0.05));
         assert!(!segment.is_transcribable(0.15));
     }
+
+    #[test]
+    fn test_detect_finds_speech_in_sine_wave() -> Result<()> {
+        let sr = 16000u32;
+        // 2 s of 440 Hz sine at amplitude 0.3 (well above VAD energy threshold)
+        // followed by 1 s of silence
+        let mut samples: Vec<f32> = (0..(2 * sr as usize))
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sr as f32).sin() * 0.3)
+            .collect();
+        samples.extend(vec![0.0f32; sr as usize]);
+
+        let vad = VoiceActivityDetector::new(sr).with_threshold(0.3);
+        let segs = vad.detect(&samples)?;
+
+        assert!(!segs.is_empty(), "should detect at least one voice segment");
+        assert!(
+            segs[0].start_time < 0.5,
+            "speech should start near the beginning"
+        );
+        assert!(segs[0].end_time > 1.0, "speech should extend past 1 second");
+        Ok(())
+    }
 }
