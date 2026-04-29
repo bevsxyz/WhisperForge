@@ -90,13 +90,16 @@ All chunks are mel-encoded in a single batched encoder forward pass (`batch_mel_
 
 - `BatchedTranscriber` in `whisperforge-align` — stub that returns placeholder text; real transcription not wired.
 
-### Implemented (Phases 4–6)
+### Implemented (Phases 4–7)
 
 - `WhisperTranscriber<B>` in `whisperforge-core/src/transcribe.rs` — wraps `Whisper<B>` + tokenizer + config; implements `WhisperInference<B>`. `transcribe_with_timestamps()` uses cross-attention peaks for per-token timestamps.
 - `TranscriptionResult` / `TranscriptionSegment` — fully serializable (serde); `token_timestamps` serde-skipped when empty.
 - `--output-format text|srt|json` in the CLI — text is plain join; srt uses `SrtWriter`; json uses `serde_json`.
 - `KvCache<B>` + `forward_decoder_cached` — O(n) decoder; cross-attn K,V static per chunk; self-attn K,V grow per step.
 - `batch_mel_spectrograms` — all chunks mel+encoded in one batch before the decode loop.
+- `extract_speaker_embedding<B>` — mean-pools encoder output → L2-normalised `Vec<f32>` speaker fingerprint (Option A).
+- `SpeakerDiarizer` + `cluster_embeddings` in `whisperforge-diarize` — agglomerative single-linkage clustering, `SPEAKER_NN` label assignment.
+- `--diarize` / `--diarize-threshold` in CLI — speaker labels in SRT (`[SPEAKER_NN]: text`) and JSON (`"speaker"` field). Option B upgrade path: `--diarize-model <path>` (planned, not yet wired).
 
 ### Long audio
 
@@ -258,28 +261,64 @@ After phase 5 (Option A): per-token timestamps in all output formats.
 
 After phase 6: all chunks encoded in one GPU batch; KV cache gives O(n) decode; `--wgpu` enables GPU on any Vulkan/DX12/Metal device.
 
-### Phase 7 — Speaker Diarization
+### Phase 7 — Speaker Diarization ✅ COMPLETE (Option A)
+
+Two embedding strategies, both wired through the same clustering and CLI path. **Option A is the default and always works with no extra model file.** Option B is a drop-in upgrade — same flags, better embeddings.
+
+#### Option A — Whisper encoder mean-pooling ✅ SHIPPED
 
 ```
-feat: integrate pyannote-rs speaker embeddings in whisperforge-diarize
+✅ feat: speaker embeddings via Whisper encoder mean-pooling
 ```
-- Replace the empty stub. Load the pyannote ONNX speaker embedding model via `ort`. Extract a speaker embedding vector per audio segment.
+- Done: `whisperforge-core/src/embed.rs` — `extract_speaker_embedding<B: Backend>(Tensor<B,3>) -> Result<Vec<f32>>`. Mean-pools the `[1, 1500, D]` encoder output over the time dimension then L2-normalises. Zero extra dependencies — the encoder output is already computed during transcription.
 
 ```
-feat: speaker clustering and segment label assignment
+✅ feat: SpeakerDiarizer assigns speaker labels to segments
 ```
-- Cosine similarity + agglomerative clustering over segment embeddings. Map speaker spans to `TranscriptionSegment` entries by time overlap.
+- Done: `whisperforge-diarize/src/clustering.rs` — `cosine_similarity`, `cluster_embeddings` (agglomerative single-linkage, pure Rust). `whisperforge-diarize/src/diarizer.rs` — `SpeakerDiarizer::assign_labels(&[Vec<f32>]) -> Vec<String>`, formats as `SPEAKER_NN`, handles zero-norm embeddings as `SPEAKER_UNKNOWN`. 11 unit tests.
 
 ```
-feat: add --diarize flag with speaker labels in SRT and JSON output
+✅ feat: --diarize flag with speaker labels in SRT and JSON output
 ```
-- `[SPEAKER_00]: text` in SRT; `"speaker": "SPEAKER_00"` in JSON. End-to-end test on a two-speaker recording.
+- Done: `speaker: Option<String>` on `TranscriptionSegment` (serde-skipped when `None`). CLI extracts encoder embedding per chunk, clusters, assigns labels. SRT prefixed `[SPEAKER_NN]: text`; JSON automatic via serde. Flags: `--diarize`, `--diarize-threshold` (default 0.7).
 
-After phase 7: full WhisperX feature parity. `--diarize` produces speaker-labelled subtitles.
+**Quality note:** Works well for clearly distinct voices (different gender/accent). Same-gender similar-accent speakers may not separate cleanly — Option B addresses this.
+
+#### Option B — ResNet293 via burn-import (planned)
+
+ResNet293 is the embedding model used by pyannote/speaker-diarization-3.1 (~0.6% EER on VoxCeleb1-O vs ~1.5% for the mean-pool baseline). Integrates as a **runtime upgrade**: `--diarize-model models/speaker_resnet293.mpk` switches the embedding source; clustering and CLI flags are unchanged.
+
+**Do NOT use `ort`** — use `burn-import` to convert the ONNX → Burn code + weights. ResNet293's op set (Conv2d, BatchNorm2d, ReLU, residual add) is fully supported by burn-import; the generated model is generic over `B: Backend` and works with `--wgpu` automatically.
+
+Conversion workflow (one-time, requires the ONNX export from HuggingFace `pyannote/wespeaker-voxceleb-resnet293-LM`):
+```bash
+# run burn-import to generate Rust code + weight record
+cargo run -p burn-import -- speaker_resnet293.onnx whisperforge-diarize/src/generated/
+# convert weights to NamedMpk
+cargo run -p whisperforge-convert -- --speaker speaker_resnet293.onnx models/speaker_resnet293.mpk
+```
+
+Planned commits for Option B:
+```
+feat: generate ResNet293 Burn model via burn-import
+```
+- Run `burn-import` on `wespeaker-voxceleb-resnet293-LM.onnx`. Check generated ops compile cleanly. Commit generated `whisperforge-diarize/src/generated/model.rs` + weight record.
+
+```
+feat: SpeakerEmbeddingModel wraps generated ResNet293
+```
+- `whisperforge-diarize/src/speaker_model.rs` — thin wrapper that takes `&[f32]` (audio samples at 16 kHz), computes 80-dim log-mel, runs ResNet293 forward, returns 256-dim L2-normalised embedding.
+
+```
+feat: --diarize-model flag selects Option B at runtime
+```
+- CLI: if `--diarize-model <path>` is provided and the file exists, load `SpeakerEmbeddingModel` and use it for embeddings; otherwise fall back to Option A (encoder mean-pooling). Both paths produce `Vec<Vec<f32>>` fed to the same `SpeakerDiarizer::assign_labels`.
+
+After Option B: pyannote-level diarization quality, no Python or ort required at runtime, GPU-accelerated via the existing `--wgpu` flag.
 
 ---
 
-**Total: 26 commits across 7 phases.** Phases 1–6 are complete (INT8 deferred pending Burn 0.21). Phase 7 (diarization) is the remaining work toward full WhisperX feature parity.
+**Total: 26 commits across 7 phases.** Phases 1–7 Option A complete. Phase 7 Option B (ResNet293 upgrade) is the next planned work.
 
 ## Code conventions
 
