@@ -3,10 +3,13 @@ use burn::backend::NdArray;
 use burn::tensor::{Int, Tensor};
 use burn_ndarray::NdArrayDevice;
 use clap::Parser;
+use std::cmp::Ordering;
 use std::io::Write;
 use tokenizers::Tokenizer;
 use whisperforge_align::AudioSegmenter;
-use whisperforge_core::{audio, load_whisper, DecodingConfig, HybridDecoder, Whisper};
+use whisperforge_core::{
+    audio, audio::AudioData, load_whisper, DecodingConfig, HybridDecoder, Whisper,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "whisperforge")]
@@ -63,6 +66,149 @@ struct Args {
 
 type Backend = NdArray<f32>;
 
+/// Transcribe one audio chunk (≤ 30 s).
+///
+/// Runs the greedy logit-collection loop followed by quality-gated
+/// temperature fallback.  EOT is suppressed at step 0 so the model always
+/// produces at least one text token.  Decoded tokens are streamed to stdout
+/// as they are generated.
+fn transcribe_chunk(
+    audio: &AudioData,
+    model: &Whisper<Backend>,
+    tokenizer: &Tokenizer,
+    config: &DecodingConfig,
+    device: &NdArrayDevice,
+) -> Result<String> {
+    let mel = audio::compute_mel_spectrogram(audio, 400, 160, 80, device)?;
+
+    // compute_mel_spectrogram pads to 30 s internally; trim just in case.
+    let expected = 3000usize;
+    let [batch, n_mels, n_frames] = mel.dims();
+    let mel = if n_frames > expected {
+        mel.slice([0..batch, 0..n_mels, 0..expected])
+    } else {
+        mel
+    };
+
+    let tok = |s: &str, fb: u32| tokenizer.token_to_id(s).unwrap_or(fb);
+    let sot = tok("<|startoftranscript|>", 50258);
+    let en = tok("<|en|>", 50259);
+    let transcribe_tok = tok("<|transcribe|>", 50359);
+    let no_timestamps = tok("<|notimestamps|>", 50363);
+    let eot = tok("<|endoftext|>", 50257);
+    let no_speech = tok("<|nospeech|>", 50362);
+
+    let encoder_output = model.forward_encoder(mel);
+
+    let decoder = HybridDecoder::new(config.clone());
+    let vocab_size = 51864usize;
+    let mut context: Vec<u32> = vec![sot, en, transcribe_tok, no_timestamps];
+    let mut all_logits: Vec<Vec<f32>> = Vec::new();
+    let budget = config.max_length.saturating_sub(context.len());
+
+    for _ in 0..budget {
+        let token_tensor: Tensor<Backend, 2, Int> = Tensor::from_data(
+            burn::tensor::TensorData::new(
+                context.iter().map(|&t| t as i32).collect::<Vec<_>>(),
+                [1, context.len()],
+            ),
+            device,
+        );
+
+        let logits = model.forward_decoder(token_tensor, encoder_output.clone());
+        let [b, seq_len, _] = logits.dims();
+        let step: Vec<f32> = logits
+            .slice([0..b, (seq_len - 1)..seq_len, 0..vocab_size])
+            .squeeze::<1>()
+            .into_data()
+            .to_vec()
+            .context("extracting step logits")?;
+
+        let unconstrained_greedy = step
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+            .map(|(i, _)| i as u32)
+            .unwrap_or(eot);
+
+        let greedy_next = if all_logits.is_empty() && unconstrained_greedy == eot {
+            step.iter()
+                .enumerate()
+                .filter(|&(i, _)| i as u32 != eot)
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                .map(|(i, _)| i as u32)
+                .unwrap_or(eot)
+        } else {
+            unconstrained_greedy
+        };
+
+        all_logits.push(step);
+
+        if greedy_next == eot {
+            break;
+        }
+
+        if greedy_next < 50257 {
+            if let Ok(word) = tokenizer.decode(&[greedy_next], false) {
+                print!("{word}");
+                std::io::stdout().flush().ok();
+            }
+        }
+
+        context.push(greedy_next);
+    }
+
+    if let Some(first) = all_logits.first_mut() {
+        if (eot as usize) < first.len() {
+            first[eot as usize] = f32::NEG_INFINITY;
+        }
+    }
+
+    let tokens = decoder.decode_with_fallback(
+        &all_logits,
+        no_timestamps,
+        vocab_size,
+        eot,
+        no_speech,
+        |ids| tokenizer.decode(ids, false).unwrap_or_default(),
+    )?;
+
+    let text_tokens: Vec<u32> = tokens.into_iter().filter(|&t| t < 50257).collect();
+    let text = tokenizer
+        .decode(&text_tokens, true)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    Ok(text.trim().to_string())
+}
+
+/// Split audio into ≤ 30 s chunks with `overlap_samples` overlap.
+fn chunk_audio_fixed(
+    audio: &AudioData,
+    chunk_samples: usize,
+    overlap_samples: usize,
+) -> Vec<AudioData> {
+    let n = audio.samples.len();
+    if n <= chunk_samples {
+        return vec![audio.clone()];
+    }
+    let step = chunk_samples.saturating_sub(overlap_samples).max(1);
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < n {
+        let end = (start + chunk_samples).min(n);
+        chunks.push(AudioData {
+            samples: audio.samples[start..end].to_vec(),
+            sample_rate: audio.sample_rate,
+            channels: audio.channels,
+        });
+        if end == n {
+            break;
+        }
+        start += step;
+    }
+    chunks
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -75,7 +221,6 @@ fn main() -> Result<()> {
 
     println!("Loading model: {}", args.model);
 
-    // Load audio
     println!("Loading audio: {}", audio_file);
     let audio_data = audio::load_wav_file(audio_file)?;
     let processed_audio = audio_data.to_16khz_mono()?;
@@ -86,31 +231,23 @@ fn main() -> Result<()> {
         processed_audio.sample_rate
     );
 
-    // Set up device
     let device = NdArrayDevice::default();
 
-    // Determine model path
     let model_path = format!("models/{}", args.model);
     println!("Loading model from: {}", model_path);
-
-    // Load model using the new loader
     let model: Whisper<Backend> = load_whisper(&model_path, &device)?;
     println!("Model loaded successfully!");
 
-    // Load tokenizer
     let tokenizer_path = "models/tokenizer.json";
     println!("Loading tokenizer from: {}", tokenizer_path);
     let tokenizer = Tokenizer::from_file(tokenizer_path)
         .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
-    // Set up decoding config based on preset and overrides
     let mut decoding_config = match args.decoding_preset.as_str() {
         "fast" => DecodingConfig::fast(),
         "accurate" => DecodingConfig::accurate(),
-        _ => DecodingConfig::balanced(), // default to balanced
+        _ => DecodingConfig::balanced(),
     };
-
-    // Apply parameter overrides
     if let Some(beam_size) = args.beam_size {
         decoding_config = decoding_config.with_beam_size(beam_size);
     }
@@ -133,10 +270,15 @@ fn main() -> Result<()> {
         decoding_config.length_penalty
     );
 
-    if args.vad_enabled {
+    // Build chunk list — VAD segments or fixed 30 s windows.
+    let chunk_samples = 30 * processed_audio.sample_rate as usize; // 480_000
+    let overlap_samples = processed_audio.sample_rate as usize; // 16_000 (1 s)
+
+    let chunks: Vec<AudioData> = if args.vad_enabled {
         let vad_threshold = args.vad_threshold.unwrap_or(0.5);
-        let segmenter =
-            AudioSegmenter::new(processed_audio.sample_rate).with_vad_threshold(vad_threshold);
+        let segmenter = AudioSegmenter::new(processed_audio.sample_rate)
+            .with_vad_threshold(vad_threshold)
+            .with_max_segment_length(30.0);
         let segments = segmenter.segment(&processed_audio)?;
         if segments.is_empty() {
             println!("VAD: no voice activity detected — skipping transcription");
@@ -152,190 +294,46 @@ fn main() -> Result<()> {
                 "  [{i}] {:.2}s – {:.2}s ({:.2}s)",
                 seg.start_time,
                 seg.end_time,
-                seg.end_time - seg.start_time
+                seg.end_time - seg.start_time,
             );
         }
-        // Phase 3 item 4 will transcribe each segment independently.
-        // For now, fall through and transcribe the full first 30 s as before.
-    }
-
-    // Compute mel spectrogram
-    println!("Computing mel spectrogram...");
-    let mel_features = audio::compute_mel_spectrogram(
-        &processed_audio,
-        400, // n_fft
-        160, // hop_length
-        80,  // n_mels
-        &device,
-    )?;
-
-    // Whisper expects exactly 3000 mel frames (30 seconds at 100 fps)
-    // n_audio_ctx = 1500 (after conv downsampling by 2)
-    let expected_frames = 3000;
-    let [batch, n_mels, n_frames] = mel_features.dims();
-
-    let mel_features = if n_frames < expected_frames {
-        // Pad with zeros
-        let padding =
-            Tensor::<Backend, 3>::zeros([batch, n_mels, expected_frames - n_frames], &device);
-        Tensor::cat(vec![mel_features, padding], 2)
-    } else if n_frames > expected_frames {
-        // Trim
-        mel_features.slice([0..batch, 0..n_mels, 0..expected_frames])
+        segments
+            .iter()
+            .map(|s| s.to_audio_data(processed_audio.sample_rate))
+            .collect()
     } else {
-        mel_features
+        chunk_audio_fixed(&processed_audio, chunk_samples, overlap_samples)
     };
 
-    println!("Mel spectrogram shape: {:?}", mel_features.dims());
-
-    // Prepare start tokens for English model
-    // <|startoftranscript|> <|en|> <|transcribe|> <|notimestamps|>
-    let sot = tokenizer
-        .token_to_id("<|startoftranscript|>")
-        .unwrap_or(50258);
-    let en = tokenizer.token_to_id("<|en|>").unwrap_or(50259);
-    let transcribe = tokenizer.token_to_id("<|transcribe|>").unwrap_or(50359);
-    let no_timestamps = tokenizer.token_to_id("<|notimestamps|>").unwrap_or(50363);
-    let eot = tokenizer.token_to_id("<|endoftext|>").unwrap_or(50257);
-
+    let total = chunks.len();
     println!(
-        "Special tokens - SOT: {}, EN: {}, TRANSCRIBE: {}, NO_TS: {}, EOT: {}",
-        sot, en, transcribe, no_timestamps, eot
+        "Transcribing {} chunk(s) with {} decoding...",
+        total, args.decoding_preset
     );
 
-    println!("Transcribing with {} decoding...", args.decoding_preset);
-
-    // Encode audio
-    let encoder_output = model.forward_encoder(mel_features);
-    println!("Encoder output shape: {:?}", encoder_output.dims());
-
-    // Check encoder output statistics (only on debug)
-    if args.debug_inference {
-        let enc_data = encoder_output.to_data();
-        let enc_vec: Vec<f32> = enc_data.to_vec().unwrap();
-        let enc_min = enc_vec.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-        let enc_max = enc_vec.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-        let enc_mean = enc_vec.iter().sum::<f32>() / enc_vec.len() as f32;
-
-        println!(
-            "Encoder output stats: Min={:.4}, Max={:.4}, Mean={:.4}",
-            enc_min, enc_max, enc_mean
-        );
-    }
-
-    // Start with initial tokens
-    let initial_tokens: Vec<u32> = vec![sot, en, transcribe, no_timestamps];
-    println!("Initial tokens: {:?}", initial_tokens);
-
-    let decoder = HybridDecoder::new(decoding_config.clone());
-    let vocab_size = 51864usize;
-    let mut context_tokens = initial_tokens.clone();
-    let mut all_step_logits: Vec<Vec<f32>> = Vec::new();
-
-    let generation_budget = decoding_config
-        .max_length
-        .saturating_sub(initial_tokens.len());
-    println!("Transcribing (max {} tokens)...", generation_budget);
-    print!(">>> ");
-
-    for _step in 0..generation_budget {
-        let token_tensor: Tensor<Backend, 2, Int> = Tensor::from_data(
-            burn::tensor::TensorData::new(
-                context_tokens.iter().map(|&t| t as i32).collect::<Vec<_>>(),
-                [1, context_tokens.len()],
-            ),
-            &device,
-        );
-
-        let logits = model.forward_decoder(token_tensor, encoder_output.clone());
-        let [batch, seq_len, _] = logits.dims();
-        let step_probs: Vec<f32> = logits
-            .slice([0..batch, (seq_len - 1)..seq_len, 0..vocab_size])
-            .squeeze::<1>()
-            .into_data()
-            .to_vec()
-            .with_context(|| "Failed to extract step logits")?;
-
-        // Greedy peek: determine next token for context feeding and EOT detection.
-        let unconstrained_greedy = step_probs
-            .iter()
-            .enumerate()
-            .max_by(|(_, a): &(usize, &f32), (_, b)| {
-                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i as u32)
-            .unwrap_or(eot);
-
-        // At step 0, suppress EOT: if the model immediately predicts EOT, the
-        // greedy loop exits with no logits, decode_with_fallback passes the
-        // quality gate on an empty sequence, and returns nothing.
-        let greedy_next = if all_step_logits.is_empty() && unconstrained_greedy == eot {
-            step_probs
-                .iter()
-                .enumerate()
-                .filter(|&(i, _)| i as u32 != eot)
-                .max_by(|(_, a): &(usize, &f32), (_, b)| {
-                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|(i, _)| i as u32)
-                .unwrap_or(eot)
-        } else {
-            unconstrained_greedy
-        };
-
-        all_step_logits.push(step_probs);
-
-        if greedy_next == eot {
-            break;
+    let mut parts: Vec<String> = Vec::with_capacity(total);
+    for (i, chunk) in chunks.iter().enumerate() {
+        if total > 1 {
+            println!("\n[chunk {}/{}  {:.1}s]", i + 1, total, chunk.duration());
         }
+        print!(">>> ");
+        std::io::stdout().flush().ok();
 
-        // Stream each token to stdout as it's generated.
-        if greedy_next < 50257 {
-            if let Ok(word) = tokenizer.decode(&[greedy_next], false) {
-                print!("{}", word);
-                std::io::stdout().flush().ok();
-            }
-        }
-
-        context_tokens.push(greedy_next);
-    }
-    println!();
-
-    // Mask EOT in step-0 logits so decode_with_fallback also suppresses it at
-    // every temperature, not just the greedy pass above.
-    if let Some(first) = all_step_logits.first_mut() {
-        if (eot as usize) < first.len() {
-            first[eot as usize] = f32::NEG_INFINITY;
+        let text = transcribe_chunk(chunk, &model, &tokenizer, &decoding_config, &device)?;
+        println!();
+        if !text.is_empty() {
+            parts.push(text);
         }
     }
 
-    // Apply quality-gated temperature fallback over collected logits.
-    let no_speech_token = tokenizer.token_to_id("<|nospeech|>").unwrap_or(50362);
-    let tokens: Vec<u32> = decoder.decode_with_fallback(
-        &all_step_logits,
-        no_timestamps,
-        vocab_size,
-        eot,
-        no_speech_token,
-        |ids| tokenizer.decode(ids, false).unwrap_or_default(),
-    )?;
-
-    // Remove special tokens and decode
-    let output_tokens: Vec<u32> = tokens
-        .into_iter()
-        .filter(|&t| t < 50257) // Filter out special tokens
-        .collect();
-
-    let text = tokenizer
-        .decode(&output_tokens, true)
-        .map_err(|e| anyhow::anyhow!("Failed to decode tokens: {}", e))?;
+    let full_text = parts.join(" ");
 
     println!("\nTranscription result:\n----------------------------------------");
-    println!("{}", text);
+    println!("{}", full_text);
     println!("----------------------------------------");
 
     if let Some(output_path) = args.output {
-        std::fs::write(&output_path, &text)?;
+        std::fs::write(&output_path, &full_text)?;
         println!("Saved to: {}", output_path);
     }
 

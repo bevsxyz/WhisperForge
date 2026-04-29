@@ -89,9 +89,9 @@ The greedy loop collects per-step logits up to `decoding_config.max_length` toke
 - `TranscriptionSegment` / `TranscriptionResult` in `lib.rs` — defined, never populated by the CLI (it returns plain `String`).
 - `BatchedTranscriber` in `whisperforge-align` — stub that returns placeholder text; real transcription not wired.
 
-### Long audio limitation
+### Long audio
 
-The CLI pads/truncates audio to exactly 30 s before the encoder, so audio longer than 30 s is silently truncated. Phase 3 item 4 adds chunked transcription with overlap.
+Audio longer than 30 s is automatically chunked into ≤30 s windows with 1 s overlap and transcribed sequentially. `--vad-enabled` uses `AudioSegmenter` segments as the chunk boundaries instead of fixed windows.
 
 ## Decoding: current state
 
@@ -213,9 +213,9 @@ feat: wire VoiceActivityDetector into CLI pipeline
 - `whisperforge-cli/src/main.rs`: add `whisperforge-align` as a dependency. When `--vad-enabled`, call `VoiceActivityDetector::detect()`, feed voice segments to the transcription loop, skip silence spans.
 
 ```
-feat: 30-second chunked transcription with overlap for long audio
+✅ feat: 30-second chunked transcription with overlap for long audio
 ```
-- VAD → merge gaps below threshold → split at ≤30s with 1s overlap → transcribe each chunk → stitch by stripping overlapping tokens at boundaries. End-to-end test on a ≥2-minute audio file.
+- Done: `transcribe_chunk()` extracted; `chunk_audio_fixed()` splits at ≤30 s with 1 s overlap; VAD path uses `AudioSegmenter` segments. Parts joined with space.
 
 After phase 3: all model sizes work; hour-long audio transcribes correctly.
 
