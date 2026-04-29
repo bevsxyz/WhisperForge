@@ -30,6 +30,10 @@ pub struct TranscriptionSegment {
     /// Populated by `transcribe_with_timestamps`; empty for plain `transcribe`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub token_timestamps: Vec<f32>,
+    /// Speaker label assigned by diarization (e.g. `"SPEAKER_00"`).
+    /// `None` when diarization was not requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

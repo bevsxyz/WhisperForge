@@ -152,6 +152,7 @@ impl<B: Backend> WhisperInference<B> for WhisperTranscriber<B> {
             tokens: text_tokens,
             confidence: 1.0,
             token_timestamps: vec![],
+            speaker: None,
         };
 
         Ok(TranscriptionResult {
@@ -300,6 +301,7 @@ impl<B: Backend> WhisperInference<B> for WhisperTranscriber<B> {
             tokens: text_tokens,
             confidence: 1.0,
             token_timestamps: token_timestamps[..n_tok].to_vec(),
+            speaker: None,
         };
 
         Ok(TranscriptionResult {

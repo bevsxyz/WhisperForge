@@ -8,9 +8,11 @@ use std::io::Write;
 use tokenizers::Tokenizer;
 use whisperforge_align::{AudioSegmenter, SrtEntry, SrtWriter};
 use whisperforge_core::{
-    audio, audio::AudioData, batch_mel_spectrograms, forward_decoder_cached, load_whisper,
-    DecodingConfig, HybridDecoder, KvCache, TranscriptionResult, TranscriptionSegment, Whisper,
+    audio, audio::AudioData, batch_mel_spectrograms, extract_speaker_embedding,
+    forward_decoder_cached, load_whisper, DecodingConfig, HybridDecoder, KvCache,
+    TranscriptionResult, TranscriptionSegment, Whisper,
 };
+use whisperforge_diarize::SpeakerDiarizer;
 
 #[derive(Parser, Debug)]
 #[command(name = "whisperforge")]
@@ -67,6 +69,14 @@ struct Args {
     /// Use the WGPU GPU backend instead of CPU (requires wgpu feature)
     #[arg(long)]
     wgpu: bool,
+
+    /// Enable speaker diarization (assigns SPEAKER_NN labels to segments)
+    #[arg(long)]
+    diarize: bool,
+
+    /// Cosine similarity threshold for speaker clustering (0.0–1.0, default 0.7)
+    #[arg(long, default_value = "0.7")]
+    diarize_threshold: f32,
 
     /// Debug inference with different encoder inputs
     #[arg(long)]
@@ -196,15 +206,15 @@ fn chunk_audio_fixed(
 }
 
 /// Format a `TranscriptionResult` as an SRT subtitle string.
+/// When a segment has a speaker label, the text is prefixed `[SPEAKER_NN]: `.
 fn result_to_srt(result: &TranscriptionResult) -> String {
     let mut writer = SrtWriter::new();
     for (i, seg) in result.segments.iter().enumerate() {
-        writer.add_entry(SrtEntry::new(
-            i + 1,
-            seg.start as f64,
-            seg.end as f64,
-            seg.text.clone(),
-        ));
+        let text = match &seg.speaker {
+            Some(spk) => format!("[{spk}]: {}", seg.text),
+            None => seg.text.clone(),
+        };
+        writer.add_entry(SrtEntry::new(i + 1, seg.start as f64, seg.end as f64, text));
     }
     writer.to_string()
 }
@@ -332,7 +342,7 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
     let batch_enc = model.forward_encoder(batch_mel); // [N, 1500, D]
 
     let mut segments: Vec<TranscriptionSegment> = Vec::with_capacity(total);
-    let mut parts: Vec<String> = Vec::with_capacity(total);
+    let mut parts: Vec<(String, Vec<f32>)> = Vec::with_capacity(total);
 
     for (i, (_, start_s, end_s)) in chunks.iter().enumerate() {
         if total > 1 {
@@ -349,6 +359,14 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
 
         let [_, frames, d_model] = batch_enc.dims();
         let enc_i = batch_enc.clone().slice([i..(i + 1), 0..frames, 0..d_model]);
+
+        // Extract speaker embedding before enc_i is consumed by transcribe_chunk.
+        let speaker_emb = if args.diarize {
+            extract_speaker_embedding(enc_i.clone()).unwrap_or_default()
+        } else {
+            vec![]
+        };
+
         let (text, tokens) =
             transcribe_chunk(enc_i, &model, &tokenizer, &decoding_config, &device)?;
         println!();
@@ -361,13 +379,27 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
                 tokens,
                 confidence: 1.0,
                 token_timestamps: vec![],
+                speaker: None,
             });
-            parts.push(text);
+            parts.push((text, speaker_emb));
+        }
+    }
+
+    let speaker_embeddings: Vec<Vec<f32>> = parts.iter().map(|(_, e)| e.clone()).collect();
+    let texts: Vec<String> = parts.into_iter().map(|(t, _)| t).collect();
+
+    // Assign speaker labels when --diarize is set.
+    if args.diarize {
+        println!("Running speaker diarization...");
+        let diarizer = SpeakerDiarizer::new().with_similarity_threshold(args.diarize_threshold);
+        let labels = diarizer.assign_labels(&speaker_embeddings);
+        for (seg, label) in segments.iter_mut().zip(labels.into_iter()) {
+            seg.speaker = Some(label);
         }
     }
 
     let result = TranscriptionResult {
-        text: parts.join(" "),
+        text: texts.join(" "),
         segments,
         language: Some(args.language.clone()),
     };
