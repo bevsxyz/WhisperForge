@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use burn::backend::NdArray;
+use burn::tensor::backend::Backend;
 use burn_ndarray::NdArrayDevice;
 use clap::Parser;
 use std::cmp::Ordering;
@@ -63,21 +64,23 @@ struct Args {
     #[arg(long)]
     vad_threshold: Option<f32>,
 
+    /// Use the WGPU GPU backend instead of CPU (requires wgpu feature)
+    #[arg(long)]
+    wgpu: bool,
+
     /// Debug inference with different encoder inputs
     #[arg(long)]
     debug_inference: bool,
 }
 
-type Backend = NdArray<f32>;
-
 /// Transcribe one audio chunk (≤ 30 s), streaming greedy tokens to stdout.
 /// Returns the final decoded text and the token ids for segment building.
-fn transcribe_chunk(
+fn transcribe_chunk<B: Backend>(
     audio: &AudioData,
-    model: &Whisper<Backend>,
+    model: &Whisper<B>,
     tokenizer: &Tokenizer,
     config: &DecodingConfig,
-    device: &NdArrayDevice,
+    device: &B::Device,
 ) -> Result<(String, Vec<u32>)> {
     let mel = audio::compute_mel_spectrogram(audio, 400, 160, 80, device)?;
 
@@ -215,17 +218,11 @@ fn result_to_srt(result: &TranscriptionResult) -> String {
     writer.to_string()
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-
-    println!("WhisperForge v0.1.0");
-
+fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
     let audio_file = args
         .audio_file
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Audio file is required (use --audio-file)"))?;
-
-    println!("Loading model: {}", args.model);
 
     println!("Loading audio: {}", audio_file);
     let audio_data = audio::load_wav_file(audio_file)?;
@@ -237,11 +234,9 @@ fn main() -> Result<()> {
         processed_audio.sample_rate
     );
 
-    let device = NdArrayDevice::default();
-
     let model_path = format!("models/{}", args.model);
     println!("Loading model from: {}", model_path);
-    let model: Whisper<Backend> = load_whisper(&model_path, &device)?;
+    let model: Whisper<B> = load_whisper(&model_path, &device)?;
     println!("Model loaded successfully!");
 
     let tokenizer_path = "models/tokenizer.json";
@@ -276,12 +271,10 @@ fn main() -> Result<()> {
         decoding_config.length_penalty
     );
 
-    // Build chunk list with absolute timestamps — VAD segments or fixed 30 s windows.
     let chunk_samples = 30 * processed_audio.sample_rate as usize;
     let overlap_samples = processed_audio.sample_rate as usize;
     let step_samples = chunk_samples - overlap_samples;
 
-    // Each entry: (AudioData, start_seconds, end_seconds)
     let chunks: Vec<(AudioData, f32, f32)> = if args.vad_enabled {
         let vad_threshold = args.vad_threshold.unwrap_or(0.5);
         let segmenter = AudioSegmenter::new(processed_audio.sample_rate)
@@ -372,7 +365,6 @@ fn main() -> Result<()> {
         language: Some(args.language.clone()),
     };
 
-    // Render output
     let output_body = match args.output_format.as_str() {
         "srt" => result_to_srt(&result),
         "json" => serde_json::to_string_pretty(&result)
@@ -390,4 +382,23 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+
+    println!("WhisperForge v0.1.0");
+    println!("Loading model: {}", args.model);
+
+    if args.wgpu {
+        use burn::backend::wgpu::WgpuDevice;
+        use burn::backend::Wgpu;
+        println!("Backend: WGPU (GPU)");
+        let device = WgpuDevice::default();
+        return run::<Wgpu>(args, device);
+    }
+
+    println!("Backend: NdArray (CPU)");
+    let device = NdArrayDevice::default();
+    run::<NdArray<f32>>(args, device)
 }
