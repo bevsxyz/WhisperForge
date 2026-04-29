@@ -32,7 +32,7 @@ Model files (`.mpk`, `.cfg`, tokenizer) are git-ignored. Download from HuggingFa
 
 ## Architecture
 
-Five-crate Rust workspace using [Burn 0.20](https://burn.dev/) for CUDA-accelerated ML inference.
+Five-crate Rust workspace using [Burn 0.20](https://burn.dev/) for GPU-accelerated ML inference.
 
 | Crate | Role |
 |-------|------|
@@ -45,7 +45,7 @@ Five-crate Rust workspace using [Burn 0.20](https://burn.dev/) for CUDA-accelera
 ### Data flow
 
 ```
-Audio → hound load (i16 → f32 via /i16::MAX) → resample to 16 kHz mono
+Audio → hound load (dispatches on WAV format: f32 direct / i16÷32767 / i32÷i32::MAX) → resample to 16 kHz mono
   → zero-pad or truncate to exactly 480 000 samples (30 s at 16 kHz)
   → center=True reflect-pad n_fft/2=200 samples each end  →  480 400 samples
   → STFT: N_FFT=400, hop=160, Hann window  →  power spectrum |STFT|² (NOT |STFT|)
@@ -70,28 +70,33 @@ Layer counts vary by model size — **"16 layers" mentioned in older docs is wro
 Key files in `whisperforge-core`:
 - [src/model.rs](whisperforge-core/src/model.rs) — **FROZEN**. Do not modify; architecture is locked at Burn 0.20.
 - [src/load.rs](whisperforge-core/src/load.rs) — loads converted `.mpk` + JSON config via `NamedMpkFileRecorder`.
-- [src/audio.rs](whisperforge-core/src/audio.rs) — mel spectrogram, audio I/O.
-- [src/decoding.rs](whisperforge-core/src/decoding.rs) — `DecodingConfig`, `BeamSearchDecoder`, `GreedyDecoder`, `HybridDecoder`. Active development area.
+- [src/audio.rs](whisperforge-core/src/audio.rs) — mel spectrogram, audio I/O, `batch_mel_spectrograms`.
+- [src/decoding.rs](whisperforge-core/src/decoding.rs) — `DecodingConfig`, `BeamSearchDecoder`, `GreedyDecoder`, `HybridDecoder`.
+- [src/kv_cache.rs](whisperforge-core/src/kv_cache.rs) — `KvCache<B>` and `forward_decoder_cached`: O(n) decoder via cached cross-attn K,V and growing self-attn K,V.
 
-All model types are generic over `B: Backend`. Default alias is `NdArray<f32>` (CPU); swap to `Cuda` for GPU.
+All model types are generic over `B: Backend`. CLI defaults to `NdArray<f32>` (CPU); pass `--wgpu` at runtime to use the WGPU backend (Vulkan/DX12/Metal — works on Intel, AMD, NVIDIA without CUDA).
 
 ## What is actually wired vs what isn't
 
 ### CLI decoding (`whisperforge-cli/src/main.rs`)
 
-The greedy loop collects per-step logits up to `decoding_config.max_length` tokens, then passes them to `HybridDecoder.decode_with_fallback()` for quality-gated temperature fallback. EOT is suppressed at step 0 so the model always generates at least one text token. `--decoding-preset`, `--beam-size`, `--temperature`, and `--length-penalty` all take effect.
+All chunks are mel-encoded in a single batched encoder forward pass (`batch_mel_spectrograms` → `forward_encoder`). Each chunk is then decoded sequentially using `forward_decoder_cached` with a `KvCache` — O(n) per step instead of O(n²). The greedy loop passes per-step logits to `HybridDecoder.decode_with_fallback()` for quality-gated temperature fallback. EOT is suppressed at step 0. `--decoding-preset`, `--beam-size`, `--temperature`, and `--length-penalty` all take effect.
 
 `--vad-enabled` / `--vad-threshold` are fully wired. When `--vad-enabled`, `AudioSegmenter` (which delegates to `VoiceActivityDetector::detect()`) segments audio into voice spans; silence is skipped; segments feed the transcription loop with accurate timestamps.
+
+`--wgpu` selects the WGPU GPU backend (Vulkan/DX12/Metal). The binary is generic over `B: Backend`; `main()` dispatches to `run::<Wgpu>` or `run::<NdArray<f32>>` based on this flag.
 
 ### Unimplemented scaffolding
 
 - `BatchedTranscriber` in `whisperforge-align` — stub that returns placeholder text; real transcription not wired.
 
-### Implemented scaffolding (Phase 4)
+### Implemented (Phases 4–6)
 
-- `WhisperTranscriber<B>` in `whisperforge-core/src/transcribe.rs` — wraps `Whisper<B>` + tokenizer + config; implements `WhisperInference<B>`. Phase 5 will replace the approximate 0–30 s segment timing with cross-attention-derived per-token timestamps.
-- `TranscriptionResult` / `TranscriptionSegment` — fully serializable (serde); populated by the CLI with chunk-boundary timestamps.
+- `WhisperTranscriber<B>` in `whisperforge-core/src/transcribe.rs` — wraps `Whisper<B>` + tokenizer + config; implements `WhisperInference<B>`. `transcribe_with_timestamps()` uses cross-attention peaks for per-token timestamps.
+- `TranscriptionResult` / `TranscriptionSegment` — fully serializable (serde); `token_timestamps` serde-skipped when empty.
 - `--output-format text|srt|json` in the CLI — text is plain join; srt uses `SrtWriter`; json uses `serde_json`.
+- `KvCache<B>` + `forward_decoder_cached` — O(n) decoder; cross-attn K,V static per chunk; self-attn K,V grow per step.
+- `batch_mel_spectrograms` — all chunks mel+encoded in one batch before the decode loop.
 
 ### Long audio
 
@@ -131,9 +136,15 @@ When the model has high confidence in `<|endoftext|>` as its first generated tok
 
 The EOT-domination bug (model predicts `<|endoftext|>` immediately) was caused by incorrect tensor name mapping in `whisperforge-convert/src/convert.rs`. OpenAI safetensors use `decoder.layers.X.encoder_attn.*`; the Burn model uses `blocks.X.cross_attn.*`. Verify this mapping exactly if conversion produces pathological outputs.
 
-### Audio: do NOT use `hound::into_samples::<f32>()`
+### WAV loading: dispatch on format, not hardcoded i16
 
-This produced zero spectrograms. The correct approach is manual `i16 → f32` conversion: divide the raw `i16` sample by `i16::MAX as f32`. See [whisperforge-core/src/audio.rs](whisperforge-core/src/audio.rs) for the pattern.
+`load_wav_file` must check `spec.sample_format` and `spec.bits_per_sample` before reading samples. IEEE float WAV (format code 3) is common for externally-resampled files and DAW exports — reading those bytes as i16 produces garbage spectrograms and "[Music]" hallucinations. The correct dispatch:
+
+- `SampleFormat::Float` → `into_samples::<f32>()` directly
+- `SampleFormat::Int, 16` → `into_samples::<i16>()` ÷ `i16::MAX`
+- `SampleFormat::Int, 24|32` → `into_samples::<i32>()` ÷ `i32::MAX`
+
+Do **not** call `into_samples::<f32>()` unconditionally — for integer WAV files it applies hound's internal scaling which diverges from manual `i16/i16::MAX` and can produce silent or clipped spectrograms.
 
 ### Burn 0.20 API differences
 
@@ -184,8 +195,8 @@ After phase 3: all model sizes work; hour-long audio transcribes correctly.
 ### Phase 4 — Structured Output + SRT ✅ COMPLETE
 `WhisperTranscriber<B>` implements `WhisperInference<B>`; `--output-format text|srt|json` all wired; chunk-boundary timestamps (approximate — Phase 5 replaces with cross-attention peaks). See git log.
 
-### Phase 5 — Word-Level Timestamps
-Two options. Ship Option A first; Option B is a separate follow-on.
+### Phase 5 — Word-Level Timestamps ✅ COMPLETE
+Two options. Option A shipped; Option B is a separate follow-on.
 
 **Option A — attention-based (~100ms precision, 2 commits)**
 
@@ -218,34 +229,34 @@ perf: optimize alignment for long audio with chunked wav2vec2 inference
 
 After phase 5 (Option A): per-token timestamps in all output formats.
 
-### Phase 6 — CUDA + Performance
+### Phase 6 — GPU + Performance ✅ COMPLETE (INT8 deferred)
 
 ```
-feat: add burn-cuda backend behind --cuda flag
+✅ fix: support float32 WAV files in load_wav_file
 ```
-- Add `burn-cuda` as an optional workspace dependency. Add `--cuda` to the CLI; swap the `NdArray<f32>` type alias to `Cuda<f32>` at runtime. Verify the existing tests still pass on CPU with no flag.
+- Done: dispatch on `(sample_format, bits_per_sample)`; float32 WAV (externally resampled files) now load correctly instead of producing garbage spectrograms.
 
 ```
-perf: KV-cache for encoder cross-attention in decoder
+✅ perf: KV-cache encoder cross-attn and decoder self-attn
 ```
-- Cache the encoder's K/V projections after the first decode step (they are constant for the entire sequence). This is the single largest speedup for beam search — cross-attn dominates decode time.
+- Done: `whisperforge-core/src/kv_cache.rs` — `KvCache<B>` pre-computes encoder K,V once per chunk; accumulates decoder self-attn K,V per step with `Tensor::cat`. Reduces decode from O(n²) to O(n) total work. ~2.6× per-token speedup on `tiny.en` CPU. Three unit tests including numerical equivalence with `forward_decoder` (max_diff < 1e-4).
 
 ```
-perf: KV-cache for decoder self-attention
+✅ feat: add WGPU GPU backend behind --wgpu flag
 ```
-- Cache the growing decoder K/V; append the new K/V slice at each step rather than recomputing from scratch.
+- Done: `burn = { features = ["wgpu"] }` in `whisperforge-cli`. `main()` is generic: dispatches to `run::<Wgpu>(args, WgpuDevice::default())` or `run::<NdArray<f32>>`. Works on Intel/AMD/NVIDIA via Vulkan, DX12, or Metal — no CUDA required.
 
 ```
-perf: batch spectrogram computation across 30-second chunks
+✅ perf: batch spectrogram + encoder across all chunks
 ```
-- Stack multiple mel spectrograms into a batch tensor before the encoder. Measure throughput improvement on a multi-chunk file.
+- Done: `batch_mel_spectrograms()` in `audio.rs` computes all chunk mels and cats to `[N, 80, 3000]`. `run()` calls `model.forward_encoder(batch_mel)` once → `[N, 1500, D]`, then slices per chunk. `transcribe_chunk` now takes `encoder_output: Tensor<B, 3>` directly.
 
 ```
-perf: INT8 quantization for VRAM reduction
+⏸ perf: INT8 quantization for VRAM reduction
 ```
-- Check Burn 0.20 quantization API. If supported: quantize weights at load time, benchmark VRAM usage for `large-v2`. If not supported: open a tracking issue and plan a Burn version bump.
+- Deferred: Burn 0.20 does not expose a stable quantization API. Revisit when bumping to Burn 0.21+.
 
-After phase 6: `large-v2` faster than realtime on CUDA; VRAM ≤2GB with INT8.
+After phase 6: all chunks encoded in one GPU batch; KV cache gives O(n) decode; `--wgpu` enables GPU on any Vulkan/DX12/Metal device.
 
 ### Phase 7 — Speaker Diarization
 
@@ -268,7 +279,7 @@ After phase 7: full WhisperX feature parity. `--diarize` produces speaker-labell
 
 ---
 
-**Total: 26 commits across 7 phases.** Phases 1–4 (10 commits) are the useful-product milestone. Phase 6 risk: Burn 0.20 INT8 maturity is uncertain — benchmark early in that phase and decide whether a Burn version bump is warranted before the quantization commit.
+**Total: 26 commits across 7 phases.** Phases 1–6 are complete (INT8 deferred pending Burn 0.21). Phase 7 (diarization) is the remaining work toward full WhisperX feature parity.
 
 ## Code conventions
 
