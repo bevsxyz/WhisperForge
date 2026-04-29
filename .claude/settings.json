@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check *)",
+      "Bash(cargo clippy *)",
+      "Bash(mise exec -- cargo check *)",
+      "Bash(mise exec -- cargo clippy *)"
+    ]
+  },
+  "includeCoAuthoredBy": false
+}
