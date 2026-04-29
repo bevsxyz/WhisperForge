@@ -367,6 +367,7 @@ fn main() -> Result<()> {
                 text: text.clone(),
                 tokens,
                 confidence: 1.0,
+                token_timestamps: vec![],
             });
             parts.push(text);
         }

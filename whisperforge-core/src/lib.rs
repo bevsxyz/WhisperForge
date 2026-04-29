@@ -1,12 +1,14 @@
 use anyhow::Result;
 use burn::tensor::{backend::Backend, Tensor};
 
+pub mod attn_extract;
 pub mod audio;
 pub mod decoding;
 pub mod load;
 pub mod model;
 pub mod transcribe;
 
+pub use attn_extract::forward_decoder_with_cross_attn;
 pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
 pub use load::{load_config, load_whisper};
 pub use model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
@@ -19,6 +21,10 @@ pub struct TranscriptionSegment {
     pub text: String,
     pub tokens: Vec<u32>,
     pub confidence: f32,
+    /// Per-token timestamps in seconds derived from cross-attention peaks.
+    /// Populated by `transcribe_with_timestamps`; empty for plain `transcribe`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub token_timestamps: Vec<f32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -5,6 +5,7 @@ use burn::tensor::{backend::Backend, Int, Tensor, TensorData};
 use tokenizers::Tokenizer;
 
 use crate::{
+    attn_extract::forward_decoder_with_cross_attn,
     audio,
     decoding::{DecodingConfig, HybridDecoder},
     model::Whisper,
@@ -36,8 +37,8 @@ impl<B: Backend> WhisperInference<B> for WhisperTranscriber<B> {
     /// Transcribe a [1, 80, 3000] mel spectrogram.
     ///
     /// Returns a single `TranscriptionSegment` spanning 0 – 30 s with
-    /// approximate per-word timestamps (evenly distributed).  Phase 5 will
-    /// replace this with cross-attention-derived per-token timestamps.
+    /// no per-token timestamps.  Use [`transcribe_with_timestamps`] to get
+    /// cross-attention-derived per-token timestamps.
     fn transcribe(&self, mel_features: Tensor<B, 3>) -> Result<TranscriptionResult> {
         let device = mel_features.device();
 
@@ -150,6 +151,7 @@ impl<B: Backend> WhisperInference<B> for WhisperTranscriber<B> {
             text: text.clone(),
             tokens: text_tokens,
             confidence: 1.0,
+            token_timestamps: vec![],
         };
 
         Ok(TranscriptionResult {
@@ -159,12 +161,152 @@ impl<B: Backend> WhisperInference<B> for WhisperTranscriber<B> {
         })
     }
 
+    /// Transcribe with per-token timestamps derived from cross-attention peaks.
+    ///
+    /// Each token's timestamp is `argmax(avg_layer_head_attn) * 2 * 160 / 16000`
+    /// seconds (the 2× accounts for the encoder's stride-2 Conv1d).  Segment
+    /// `start`/`end` are set to the first/last token timestamp rather than the
+    /// full 0–30 s placeholder used by [`transcribe`].
     fn transcribe_with_timestamps(
         &self,
         mel_features: Tensor<B, 3>,
     ) -> Result<TranscriptionResult> {
-        // Phase 5 will add cross-attention-derived per-token timestamps.
-        self.transcribe(mel_features)
+        let device = mel_features.device();
+
+        let expected = 3000usize;
+        let [batch, n_mels, n_frames] = mel_features.dims();
+        let mel = if n_frames > expected {
+            mel_features.slice([0..batch, 0..n_mels, 0..expected])
+        } else {
+            mel_features
+        };
+
+        let tok = |s: &str, fb: u32| self.tokenizer.token_to_id(s).unwrap_or(fb);
+        let sot = tok("<|startoftranscript|>", 50258);
+        let en = tok("<|en|>", 50259);
+        let transcribe_tok = tok("<|transcribe|>", 50359);
+        let no_timestamps = tok("<|notimestamps|>", 50363);
+        let eot = tok("<|endoftext|>", EOT);
+        let no_speech = tok("<|nospeech|>", 50362);
+
+        let encoder_output = self.model.forward_encoder(mel);
+        let decoder = HybridDecoder::new(self.config.clone());
+
+        let mut context: Vec<u32> = vec![sot, en, transcribe_tok, no_timestamps];
+        let mut all_logits: Vec<Vec<f32>> = Vec::new();
+        // One timestamp per generated (non-EOT) token.
+        let mut token_timestamps: Vec<f32> = Vec::new();
+        let budget = self.config.max_length.saturating_sub(context.len());
+
+        // hop_length=160, sample_rate=16000, encoder stride-2 halves time dim.
+        const SECONDS_PER_ENCODER_FRAME: f32 = 2.0 * 160.0 / 16000.0;
+
+        for _ in 0..budget {
+            let token_tensor: Tensor<B, 2, Int> = Tensor::from_data(
+                TensorData::new(
+                    context.iter().map(|&t| t as i32).collect::<Vec<_>>(),
+                    [1, context.len()],
+                ),
+                &device,
+            );
+
+            let (logits, frame_weights) =
+                forward_decoder_with_cross_attn(&self.model, token_tensor, encoder_output.clone());
+
+            let [b, seq_len, _] = logits.dims();
+            let step: Vec<f32> = logits
+                .slice([0..b, (seq_len - 1)..seq_len, 0..VOCAB_SIZE])
+                .squeeze::<1>()
+                .into_data()
+                .to_vec()
+                .context("extracting step logits")?;
+
+            let best_frame = frame_weights
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let ts = best_frame as f32 * SECONDS_PER_ENCODER_FRAME;
+
+            let unconstrained = step
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                .map(|(i, _)| i as u32)
+                .unwrap_or(eot);
+
+            let greedy_next = if all_logits.is_empty() && unconstrained == eot {
+                step.iter()
+                    .enumerate()
+                    .filter(|&(i, _)| i as u32 != eot)
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                    .map(|(i, _)| i as u32)
+                    .unwrap_or(eot)
+            } else {
+                unconstrained
+            };
+
+            all_logits.push(step);
+
+            if greedy_next == eot {
+                break;
+            }
+            token_timestamps.push(ts);
+            context.push(greedy_next);
+        }
+
+        if let Some(first) = all_logits.first_mut() {
+            if (eot as usize) < first.len() {
+                first[eot as usize] = f32::NEG_INFINITY;
+            }
+        }
+
+        let tokens = decoder.decode_with_fallback(
+            &all_logits,
+            no_timestamps,
+            VOCAB_SIZE,
+            eot,
+            no_speech,
+            |ids| self.tokenizer.decode(ids, false).unwrap_or_default(),
+        )?;
+
+        let text_tokens: Vec<u32> = tokens.into_iter().filter(|&t| t < EOT).collect();
+        let text = self
+            .tokenizer
+            .decode(&text_tokens, true)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let text = text.trim().to_string();
+
+        if text.is_empty() {
+            return Ok(TranscriptionResult {
+                text: String::new(),
+                segments: vec![],
+                language: None,
+            });
+        }
+
+        let n_tok = text_tokens.len().min(token_timestamps.len());
+        let seg_start = token_timestamps.first().copied().unwrap_or(0.0);
+        let seg_end = token_timestamps
+            .get(n_tok.saturating_sub(1))
+            .copied()
+            .unwrap_or(30.0);
+
+        let segment = TranscriptionSegment {
+            start: seg_start,
+            end: seg_end,
+            text: text.clone(),
+            tokens: text_tokens,
+            confidence: 1.0,
+            token_timestamps: token_timestamps[..n_tok].to_vec(),
+        };
+
+        Ok(TranscriptionResult {
+            text,
+            segments: vec![segment],
+            language: None,
+        })
     }
 }
 

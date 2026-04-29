@@ -55,9 +55,6 @@ Audio → hound load (i16 → f32 via /i16::MAX) → resample to 16 kHz mono
   → Encoder: Conv1d stem (stride-2 halves time to 1500) → n_audio_layer transformer blocks
   → Decoder: n_text_layer transformer blocks (masked self-attn → cross-attn → MLP)
   → HybridDecoder (quality-gated temperature fallback) → decoded text
-
-[Current reality: the CLI still runs a hand-rolled greedy loop capped at 50 tokens.
- Phase 1 item 2 of the roadmap replaces this with the actual HybridDecoder.]
 ```
 
 Layer counts vary by model size — **"16 layers" mentioned in older docs is wrong**:
@@ -155,52 +152,10 @@ Seven phases toward WhisperX feature parity in Rust. Work phases in order — ea
 Each entry below is a single commit. Every commit must leave `cargo check --all` clean and the test suite passing before it lands.
 
 ### Phase 1 — Integration ✅ COMPLETE
-Wire up code that already exists but isn't called. No new algorithms.
-
-```
-✅ fix: use loaded model config for layer-norm defaults in load_whisper
-```
-- Done: `load.rs` reads config from disk and passes it to `config.init()`. No hardcoded `tiny_en()` fallback.
-
-```
-✅ feat: wire HybridDecoder into CLI replacing hand-rolled greedy loop
-```
-- Done: CLI collects greedy logits (up to `max_length`), suppresses EOT at step 0, then calls `decoder.decode_with_fallback(...)`.
-
-```
-✅ feat: replace temperature scalar with fallback sequence in DecodingConfig
-```
-- Done: `temperatures: Vec<f32>` defaulting to `[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]` is in `decoding.rs`.
-
-After phase 1: `tiny.en` produces full-length transcripts driven by quality-gated temperature fallback.
+`load.rs` config from disk; HybridDecoder wired into CLI; `temperatures: Vec<f32>` fallback sequence. See git log.
 
 ### Phase 2 — SOTA Decoding ✅ COMPLETE
-Quality-gated temperature fallback — the key differentiator of faster-whisper.
-
-```
-✅ feat: add compression ratio quality metric to DecodingConfig
-```
-- Done: `flate2` added, `compression_ratio()` implemented, `compression_ratio_threshold: f32` (2.4) in `DecodingConfig`.
-
-```
-✅ feat: add log probability and no-speech quality metrics
-```
-- Done: `log_prob_threshold: f32` (-1.0) and `no_speech_threshold: f32` (0.6) in `DecodingConfig`.
-
-```
-✅ feat: implement temperature fallback loop in HybridDecoder
-```
-- Done: `decode_with_fallback()` loops over temperatures with quality gating.
-
-```
-✅ test: benchmark SOTA decoding against LJSpeech reference transcriptions
-```
-- Done: `whisperforge-core/tests/wer_benchmark.rs` with LJSpeech fixtures. Average WER 0.8% on `tiny.en` (threshold 20%).
-
-Also completed as prerequisite (not in original roadmap):
-- `fix: mel spectrogram preprocessing to match Python Whisper exactly` — power spectrum (`norm_sqr`), Slaney mel scale + normalisation, 30s sample padding, center=True reflection padding, drop last STFT frame.
-
-After phase 2: decoding quality matches faster-whisper on standard benchmarks.
+Compression ratio, log-prob, no-speech quality gates; `decode_with_fallback()` temperature loop; mel preprocessing matched to Python Whisper (power spectrum, Slaney scale, center padding). WER 0.8% on `tiny.en`. See git log.
 
 ### Phase 3 — Multi-model + VAD
 
@@ -227,23 +182,7 @@ feat: wire VoiceActivityDetector into CLI pipeline
 After phase 3: all model sizes work; hour-long audio transcribes correctly.
 
 ### Phase 4 — Structured Output + SRT ✅ COMPLETE
-
-```
-✅ feat: implement WhisperInference trait and populate TranscriptionResult
-```
-- Done: `WhisperTranscriber<B>` in `whisperforge-core/src/transcribe.rs` implements `WhisperInference<B>`. `TranscriptionSegment` start/end come from chunk boundaries (VAD or fixed 30 s). Approximate timestamps — Phase 5 will replace with cross-attention peaks.
-
-```
-✅ feat: add --output-format srt via SrtWriter
-```
-- Done: `--output-format srt` in the CLI renders via `SrtWriter`; one SRT entry per transcribed chunk.
-
-```
-✅ feat: add --output-format json
-```
-- Done: `--output-format json` serializes `TranscriptionResult` via `serde_json`. Both `TranscriptionResult` and `TranscriptionSegment` derive `Serialize`/`Deserialize`.
-
-After phase 4: `whisperforge -a audio.wav -m tiny_en_converted --output-format srt > output.srt` works.
+`WhisperTranscriber<B>` implements `WhisperInference<B>`; `--output-format text|srt|json` all wired; chunk-boundary timestamps (approximate — Phase 5 replaces with cross-attention peaks). See git log.
 
 ### Phase 5 — Word-Level Timestamps
 Two options. Ship Option A first; Option B is a separate follow-on.
@@ -251,14 +190,14 @@ Two options. Ship Option A first; Option B is a separate follow-on.
 **Option A — attention-based (~100ms precision, 2 commits)**
 
 ```
-feat: capture cross-attention weights during decoding
+✅ feat: capture cross-attention weights during decoding
 ```
-- Modify the decoder forward pass to optionally return attention weights per step. Gate behind a `DecodingConfig` flag so there's no overhead by default.
+- Done: `whisperforge-core/src/attn_extract.rs` — `forward_decoder_with_cross_attn()` replicates the TextDecoder forward pass, capturing the cross-attention softmax matrix at each block for the last query position. Averaged over all layers and heads. No modification to frozen `model.rs` — accesses public fields directly.
 
 ```
-feat: extract per-token timestamps from cross-attention peaks
+✅ feat: extract per-token timestamps from cross-attention peaks
 ```
-- At each decoder step, argmax over encoder frame dimension of the cross-attention weight → `frame_index * hop / sample_rate`. Populate `word_start`/`word_end` in `TranscriptionSegment`.
+- Done: `transcribe_with_timestamps()` in `transcribe.rs` calls `forward_decoder_with_cross_attn` at each greedy step. Timestamp = `argmax(avg_layer_head_weights) * 2 * 160 / 16000` seconds. `TranscriptionSegment.token_timestamps` populated; segment `start`/`end` set to actual speech boundaries instead of the full 0–30 s placeholder. `token_timestamps` is serde-skipped when empty.
 
 **Option B — forced alignment (~20ms precision, 3 additional commits)**
 
@@ -339,3 +278,25 @@ After phase 7: full WhisperX feature parity. `--diarize` produces speaker-labell
 - **Tests**: `fn test_name() -> Result<()>` with `Ok(())` at end; arrange/act/assert structure; test names follow `test_<function>_<scenario>`.
 - **Documentation**: doc comments on all public items with `# Examples`, `# Errors`, `# Performance` sections where relevant.
 - **Model architecture**: never modify `src/model.rs` — treat it as a read-only dependency.
+
+## Working with Claude
+
+### Slash commands
+
+| Command | Purpose |
+|---------|---------|
+| `/test` | Run the correct test suite (release, excluding whisperforge-align) |
+| `/bench` | Run LJSpeech WER benchmark with nocapture output |
+| `/check` | Full quality gate: fmt check → clippy → compile |
+| `/phase` | Summarize roadmap status and list next commits |
+
+### Agent patterns
+
+- **Before starting a phase**: spawn a `Plan` agent on the phase's CLAUDE.md section — produces ordered commit sequence with file-level targets before touching code.
+- **After multi-file changes**: spawn an `Explore` agent to run `cargo check --all 2>&1` in isolation and report errors grouped by crate — keeps compiler noise out of main context.
+- **When WER regresses**: spawn a general-purpose agent to diff the mel/decoding pipeline against the last known-good commit, cross-referencing the Hard-won lessons section.
+
+### Hooks (auto-configured in `.claude/settings.json`)
+
+- **PreToolUse on Edit/Write**: blocks edits to `model.rs`
+- **PostToolUse on Edit/Write**: on any `.rs` edit, auto-runs `cargo fmt --all` then surfaces `cargo check` errors inline
