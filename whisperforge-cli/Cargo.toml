@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 whisperforge-core = { path = "../whisperforge-core" }
+whisperforge-align = { path = "../whisperforge-align" }
 clap = { workspace = true, features = ["derive"] }
 anyhow = { workspace = true }
 serde = { workspace = true }

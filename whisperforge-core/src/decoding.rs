@@ -659,18 +659,20 @@ mod tests {
         };
         let decoder = HybridDecoder::new(config);
 
-        let token_probs = vec![
-            vec![-0.01, -10.0, -10.0],
-            vec![-0.01, -10.0, -10.0],
-        ];
+        let token_probs = vec![vec![-0.01, -10.0, -10.0], vec![-0.01, -10.0, -10.0]];
 
         let tokens = decoder.decode_with_fallback(
             &token_probs,
             99,
             3,
-            0,    // eos
-            2,    // no_speech_token (low prob → not triggered)
-            |ids| ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),
+            0, // eos
+            2, // no_speech_token (low prob → not triggered)
+            |ids| {
+                ids.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            },
         )?;
 
         assert!(!tokens.is_empty());
@@ -698,12 +700,15 @@ mod tests {
             &token_probs,
             99,
             3,
-            0,   // eos
-            1,   // no_speech_token = token 1 (dominant)
+            0, // eos
+            1, // no_speech_token = token 1 (dominant)
             |_| String::new(),
         )?;
 
-        assert!(tokens.is_empty(), "should return empty when no-speech detected");
+        assert!(
+            tokens.is_empty(),
+            "should return empty when no-speech detected"
+        );
         Ok(())
     }
 }

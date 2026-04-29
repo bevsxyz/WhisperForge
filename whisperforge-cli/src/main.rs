@@ -5,6 +5,7 @@ use burn_ndarray::NdArrayDevice;
 use clap::Parser;
 use std::io::Write;
 use tokenizers::Tokenizer;
+use whisperforge_align::AudioSegmenter;
 use whisperforge_core::{audio, load_whisper, DecodingConfig, HybridDecoder, Whisper};
 
 #[derive(Parser, Debug)]
@@ -134,7 +135,28 @@ fn main() -> Result<()> {
 
     if args.vad_enabled {
         let vad_threshold = args.vad_threshold.unwrap_or(0.5);
-        println!("VAD enabled: threshold={}", vad_threshold);
+        let segmenter =
+            AudioSegmenter::new(processed_audio.sample_rate).with_vad_threshold(vad_threshold);
+        let segments = segmenter.segment(&processed_audio)?;
+        if segments.is_empty() {
+            println!("VAD: no voice activity detected — skipping transcription");
+            return Ok(());
+        }
+        println!(
+            "VAD: detected {} voice segment(s) (threshold={:.2})",
+            segments.len(),
+            vad_threshold
+        );
+        for (i, seg) in segments.iter().enumerate() {
+            println!(
+                "  [{i}] {:.2}s – {:.2}s ({:.2}s)",
+                seg.start_time,
+                seg.end_time,
+                seg.end_time - seg.start_time
+            );
+        }
+        // Phase 3 item 4 will transcribe each segment independently.
+        // For now, fall through and transcribe the full first 30 s as before.
     }
 
     // Compute mel spectrogram
