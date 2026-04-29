@@ -284,37 +284,25 @@ Two embedding strategies, both wired through the same clustering and CLI path. *
 
 **Quality note:** Works well for clearly distinct voices (different gender/accent). Same-gender similar-accent speakers may not separate cleanly — Option B addresses this.
 
-#### Option B — ResNet293 via burn-import (planned)
+#### Option B — ResNet293 via burn-onnx ⏸ DEFERRED (pending Burn 0.21 stable)
 
 ResNet293 is the embedding model used by pyannote/speaker-diarization-3.1 (~0.6% EER on VoxCeleb1-O vs ~1.5% for the mean-pool baseline). Integrates as a **runtime upgrade**: `--diarize-model models/speaker_resnet293.mpk` switches the embedding source; clustering and CLI flags are unchanged.
 
-**Do NOT use `ort`** — use `burn-import` to convert the ONNX → Burn code + weights. ResNet293's op set (Conv2d, BatchNorm2d, ReLU, residual add) is fully supported by burn-import; the generated model is generic over `B: Backend` and works with `--wgpu` automatically.
+**Why deferred:**
+- `burn-import 0.20.1` fails on ResNet293's ONNX with `TypeMismatch { expected: "Tensor", actual: "Shape(1)" }` — the 0.20 type inferencer can't handle `Shape` ops used for dynamic reshaping in the PyTorch export.
+- `burn-onnx` (Burn 0.21) fixes this, but Burn 0.21.0-pre.4 has a **breaking `BackendTypes` split** that would require modifying the frozen `model.rs`. Not safe until 0.21 stable ships with a migration guide.
+- `ort` was ruled out to keep the workspace dependency-free of a second ML runtime.
 
-Conversion workflow (one-time, requires the ONNX export from HuggingFace `pyannote/wespeaker-voxceleb-resnet293-LM`):
-```bash
-# run burn-import to generate Rust code + weight record
-cargo run -p burn-import -- speaker_resnet293.onnx whisperforge-diarize/src/generated/
-# convert weights to NamedMpk
-cargo run -p whisperforge-convert -- --speaker speaker_resnet293.onnx models/speaker_resnet293.mpk
-```
+**ONNX model is available:** `Wespeaker/wespeaker-voxceleb-resnet293-LM` on HuggingFace (public, no auth, 39MB ONNX). The file `models/speaker_resnet293.onnx` may already be present locally.
 
-Planned commits for Option B:
-```
-feat: generate ResNet293 Burn model via burn-import
-```
-- Run `burn-import` on `wespeaker-voxceleb-resnet293-LM.onnx`. Check generated ops compile cleanly. Commit generated `whisperforge-diarize/src/generated/model.rs` + weight record.
+**When Burn 0.21 stable ships, implementation is:**
+1. Replace `burn = "0.20"` with `burn = "0.21"` across workspace; verify `model.rs` compiles (watch for BackendTypes changes to `B: Backend` bounds).
+2. Add `burn-onnx` as a build dependency to `whisperforge-diarize`.
+3. Write `build.rs` using `burn_onnx::ModelGen` on `models/speaker_resnet293.onnx` → `src/generated/`.
+4. Implement `SpeakerEmbeddingModel` wrapper in `src/speaker_model.rs`: takes `&[f32]` at 16 kHz, computes 80-dim log-mel, runs ResNet293, returns 256-dim L2-normalised embedding.
+5. Add `--diarize-model <path>` CLI flag: if provided, use `SpeakerEmbeddingModel`; otherwise fall back to Option A. Both paths feed the same `SpeakerDiarizer::assign_labels`.
 
-```
-feat: SpeakerEmbeddingModel wraps generated ResNet293
-```
-- `whisperforge-diarize/src/speaker_model.rs` — thin wrapper that takes `&[f32]` (audio samples at 16 kHz), computes 80-dim log-mel, runs ResNet293 forward, returns 256-dim L2-normalised embedding.
-
-```
-feat: --diarize-model flag selects Option B at runtime
-```
-- CLI: if `--diarize-model <path>` is provided and the file exists, load `SpeakerEmbeddingModel` and use it for embeddings; otherwise fall back to Option A (encoder mean-pooling). Both paths produce `Vec<Vec<f32>>` fed to the same `SpeakerDiarizer::assign_labels`.
-
-After Option B: pyannote-level diarization quality, no Python or ort required at runtime, GPU-accelerated via the existing `--wgpu` flag.
+After Option B: pyannote-level diarization quality, no ort required, GPU-accelerated via `--wgpu`.
 
 ---
 
