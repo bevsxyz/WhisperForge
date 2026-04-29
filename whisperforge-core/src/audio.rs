@@ -157,16 +157,21 @@ pub fn load_wav_file<P: AsRef<Path>>(path: P) -> Result<AudioData> {
 
     let spec = reader.spec();
 
-    // Read samples as i16 and convert to f32 manually for proper scaling
-    let i16_samples: Vec<i16> = reader
-        .into_samples::<i16>()
-        .map(|s| s.unwrap_or(0))
-        .collect();
-
-    let samples: Vec<f32> = i16_samples
-        .into_iter()
-        .map(|s| s as f32 / i16::MAX as f32)
-        .collect();
+    let samples: Vec<f32> = match (spec.sample_format, spec.bits_per_sample) {
+        (hound::SampleFormat::Float, _) => reader
+            .into_samples::<f32>()
+            .map(|s| s.unwrap_or(0.0))
+            .collect(),
+        (hound::SampleFormat::Int, 16) => reader
+            .into_samples::<i16>()
+            .map(|s| s.unwrap_or(0) as f32 / i16::MAX as f32)
+            .collect(),
+        (hound::SampleFormat::Int, 24 | 32) => reader
+            .into_samples::<i32>()
+            .map(|s| s.unwrap_or(0) as f32 / i32::MAX as f32)
+            .collect(),
+        (fmt, bits) => return Err(anyhow!("Unsupported WAV format: {:?} {}-bit", fmt, bits)),
+    };
 
     Ok(AudioData {
         samples,

@@ -2,6 +2,7 @@
 name = "whisperforge-convert"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 whisperforge-core = { path = "../whisperforge-core" }
