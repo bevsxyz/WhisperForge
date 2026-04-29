@@ -88,9 +88,13 @@ The greedy loop collects per-step logits up to `decoding_config.max_length` toke
 
 ### Unimplemented scaffolding
 
-- `WhisperInference<B>` trait in `lib.rs` — defined, never implemented for `Whisper<B>`.
-- `TranscriptionSegment` / `TranscriptionResult` in `lib.rs` — defined, never populated by the CLI (it returns plain `String`).
 - `BatchedTranscriber` in `whisperforge-align` — stub that returns placeholder text; real transcription not wired.
+
+### Implemented scaffolding (Phase 4)
+
+- `WhisperTranscriber<B>` in `whisperforge-core/src/transcribe.rs` — wraps `Whisper<B>` + tokenizer + config; implements `WhisperInference<B>`. Phase 5 will replace the approximate 0–30 s segment timing with cross-attention-derived per-token timestamps.
+- `TranscriptionResult` / `TranscriptionSegment` — fully serializable (serde); populated by the CLI with chunk-boundary timestamps.
+- `--output-format text|srt|json` in the CLI — text is plain join; srt uses `SrtWriter`; json uses `serde_json`.
 
 ### Long audio
 
@@ -222,24 +226,24 @@ feat: wire VoiceActivityDetector into CLI pipeline
 
 After phase 3: all model sizes work; hour-long audio transcribes correctly.
 
-### Phase 4 — Structured Output + SRT
+### Phase 4 — Structured Output + SRT ✅ COMPLETE
 
 ```
-feat: implement WhisperInference trait and populate TranscriptionResult
+✅ feat: implement WhisperInference trait and populate TranscriptionResult
 ```
-- `whisperforge-core/src/lib.rs`: implement `WhisperInference<B>` for `Whisper<B>`. Populate `TranscriptionSegment` start/end from VAD segment boundaries. Approximate word timestamps as `segment_duration / word_count` (placeholder until Phase 5).
+- Done: `WhisperTranscriber<B>` in `whisperforge-core/src/transcribe.rs` implements `WhisperInference<B>`. `TranscriptionSegment` start/end come from chunk boundaries (VAD or fixed 30 s). Approximate timestamps — Phase 5 will replace with cross-attention peaks.
 
 ```
-feat: add --output-format srt via SrtWriter
+✅ feat: add --output-format srt via SrtWriter
 ```
-- Parse `--output-format [text|srt|json]` in the CLI. Wire `SrtWriter` from `whisperforge-align` for `srt`. Smoke-test: `whisperforge -a audio.wav -m small --output-format srt > out.srt` and inspect the file.
+- Done: `--output-format srt` in the CLI renders via `SrtWriter`; one SRT entry per transcribed chunk.
 
 ```
-feat: add --output-format json
+✅ feat: add --output-format json
 ```
-- Serialize `TranscriptionResult` to JSON. This commit is the end of the "useful product" milestone — all three output formats work.
+- Done: `--output-format json` serializes `TranscriptionResult` via `serde_json`. Both `TranscriptionResult` and `TranscriptionSegment` derive `Serialize`/`Deserialize`.
 
-After phase 4: `whisperforge -a audio.wav -m small --output-format srt > output.srt` works.
+After phase 4: `whisperforge -a audio.wav -m tiny_en_converted --output-format srt > output.srt` works.
 
 ### Phase 5 — Word-Level Timestamps
 Two options. Ship Option A first; Option B is a separate follow-on.

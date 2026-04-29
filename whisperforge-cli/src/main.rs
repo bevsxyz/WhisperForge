@@ -6,9 +6,10 @@ use clap::Parser;
 use std::cmp::Ordering;
 use std::io::Write;
 use tokenizers::Tokenizer;
-use whisperforge_align::AudioSegmenter;
+use whisperforge_align::{AudioSegmenter, SrtEntry, SrtWriter};
 use whisperforge_core::{
-    audio, audio::AudioData, load_whisper, DecodingConfig, HybridDecoder, Whisper,
+    audio, audio::AudioData, load_whisper, DecodingConfig, HybridDecoder, TranscriptionResult,
+    TranscriptionSegment, Whisper,
 };
 
 #[derive(Parser, Debug)]
@@ -26,6 +27,10 @@ struct Args {
 
     #[arg(short, long)]
     output: Option<String>,
+
+    /// Output format: text, srt, json
+    #[arg(long, default_value = "text")]
+    output_format: String,
 
     /// Decoding preset: fast, balanced, accurate
     #[arg(long, default_value = "balanced")]
@@ -66,22 +71,17 @@ struct Args {
 
 type Backend = NdArray<f32>;
 
-/// Transcribe one audio chunk (≤ 30 s).
-///
-/// Runs the greedy logit-collection loop followed by quality-gated
-/// temperature fallback.  EOT is suppressed at step 0 so the model always
-/// produces at least one text token.  Decoded tokens are streamed to stdout
-/// as they are generated.
+/// Transcribe one audio chunk (≤ 30 s), streaming greedy tokens to stdout.
+/// Returns the final decoded text and the token ids for segment building.
 fn transcribe_chunk(
     audio: &AudioData,
     model: &Whisper<Backend>,
     tokenizer: &Tokenizer,
     config: &DecodingConfig,
     device: &NdArrayDevice,
-) -> Result<String> {
+) -> Result<(String, Vec<u32>)> {
     let mel = audio::compute_mel_spectrogram(audio, 400, 160, 80, device)?;
 
-    // compute_mel_spectrogram pads to 30 s internally; trim just in case.
     let expected = 3000usize;
     let [batch, n_mels, n_frames] = mel.dims();
     let mel = if n_frames > expected {
@@ -99,7 +99,6 @@ fn transcribe_chunk(
     let no_speech = tok("<|nospeech|>", 50362);
 
     let encoder_output = model.forward_encoder(mel);
-
     let decoder = HybridDecoder::new(config.clone());
     let vocab_size = 51864usize;
     let mut context: Vec<u32> = vec![sot, en, transcribe_tok, no_timestamps];
@@ -124,14 +123,14 @@ fn transcribe_chunk(
             .to_vec()
             .context("extracting step logits")?;
 
-        let unconstrained_greedy = step
+        let unconstrained = step
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
             .map(|(i, _)| i as u32)
             .unwrap_or(eot);
 
-        let greedy_next = if all_logits.is_empty() && unconstrained_greedy == eot {
+        let greedy_next = if all_logits.is_empty() && unconstrained == eot {
             step.iter()
                 .enumerate()
                 .filter(|&(i, _)| i as u32 != eot)
@@ -139,7 +138,7 @@ fn transcribe_chunk(
                 .map(|(i, _)| i as u32)
                 .unwrap_or(eot)
         } else {
-            unconstrained_greedy
+            unconstrained
         };
 
         all_logits.push(step);
@@ -178,7 +177,7 @@ fn transcribe_chunk(
         .decode(&text_tokens, true)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    Ok(text.trim().to_string())
+    Ok((text.trim().to_string(), text_tokens))
 }
 
 /// Split audio into ≤ 30 s chunks with `overlap_samples` overlap.
@@ -207,6 +206,20 @@ fn chunk_audio_fixed(
         start += step;
     }
     chunks
+}
+
+/// Format a `TranscriptionResult` as an SRT subtitle string.
+fn result_to_srt(result: &TranscriptionResult) -> String {
+    let mut writer = SrtWriter::new();
+    for (i, seg) in result.segments.iter().enumerate() {
+        writer.add_entry(SrtEntry::new(
+            i + 1,
+            seg.start as f64,
+            seg.end as f64,
+            seg.text.clone(),
+        ));
+    }
+    writer.to_string()
 }
 
 fn main() -> Result<()> {
@@ -270,11 +283,13 @@ fn main() -> Result<()> {
         decoding_config.length_penalty
     );
 
-    // Build chunk list — VAD segments or fixed 30 s windows.
-    let chunk_samples = 30 * processed_audio.sample_rate as usize; // 480_000
-    let overlap_samples = processed_audio.sample_rate as usize; // 16_000 (1 s)
+    // Build chunk list with absolute timestamps — VAD segments or fixed 30 s windows.
+    let chunk_samples = 30 * processed_audio.sample_rate as usize;
+    let overlap_samples = processed_audio.sample_rate as usize;
+    let step_samples = chunk_samples - overlap_samples;
 
-    let chunks: Vec<AudioData> = if args.vad_enabled {
+    // Each entry: (AudioData, start_seconds, end_seconds)
+    let chunks: Vec<(AudioData, f32, f32)> = if args.vad_enabled {
         let vad_threshold = args.vad_threshold.unwrap_or(0.5);
         let segmenter = AudioSegmenter::new(processed_audio.sample_rate)
             .with_vad_threshold(vad_threshold)
@@ -299,10 +314,24 @@ fn main() -> Result<()> {
         }
         segments
             .iter()
-            .map(|s| s.to_audio_data(processed_audio.sample_rate))
+            .map(|s| {
+                (
+                    s.to_audio_data(processed_audio.sample_rate),
+                    s.start_time as f32,
+                    s.end_time as f32,
+                )
+            })
             .collect()
     } else {
         chunk_audio_fixed(&processed_audio, chunk_samples, overlap_samples)
+            .into_iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                let start = (i * step_samples) as f32 / processed_audio.sample_rate as f32;
+                let end = start + chunk.samples.len() as f32 / processed_audio.sample_rate as f32;
+                (chunk, start, end)
+            })
+            .collect()
     };
 
     let total = chunks.len();
@@ -311,29 +340,58 @@ fn main() -> Result<()> {
         total, args.decoding_preset
     );
 
+    let mut segments: Vec<TranscriptionSegment> = Vec::with_capacity(total);
     let mut parts: Vec<String> = Vec::with_capacity(total);
-    for (i, chunk) in chunks.iter().enumerate() {
+
+    for (i, (chunk, start_s, end_s)) in chunks.iter().enumerate() {
         if total > 1 {
-            println!("\n[chunk {}/{}  {:.1}s]", i + 1, total, chunk.duration());
+            println!(
+                "\n[chunk {}/{}  {:.1}s – {:.1}s]",
+                i + 1,
+                total,
+                start_s,
+                end_s
+            );
         }
         print!(">>> ");
         std::io::stdout().flush().ok();
 
-        let text = transcribe_chunk(chunk, &model, &tokenizer, &decoding_config, &device)?;
+        let (text, tokens) =
+            transcribe_chunk(chunk, &model, &tokenizer, &decoding_config, &device)?;
         println!();
+
         if !text.is_empty() {
+            segments.push(TranscriptionSegment {
+                start: *start_s,
+                end: *end_s,
+                text: text.clone(),
+                tokens,
+                confidence: 1.0,
+            });
             parts.push(text);
         }
     }
 
-    let full_text = parts.join(" ");
+    let result = TranscriptionResult {
+        text: parts.join(" "),
+        segments,
+        language: Some(args.language.clone()),
+    };
+
+    // Render output
+    let output_body = match args.output_format.as_str() {
+        "srt" => result_to_srt(&result),
+        "json" => serde_json::to_string_pretty(&result)
+            .context("serialising TranscriptionResult to JSON")?,
+        _ => result.text.clone(),
+    };
 
     println!("\nTranscription result:\n----------------------------------------");
-    println!("{}", full_text);
+    println!("{}", output_body);
     println!("----------------------------------------");
 
     if let Some(output_path) = args.output {
-        std::fs::write(&output_path, &full_text)?;
+        std::fs::write(&output_path, &output_body)?;
         println!("Saved to: {}", output_path);
     }
 
