@@ -15,8 +15,11 @@ cargo test --release -p whisperforge-core -p whisperforge-convert -p whisperforg
 # Single test with output
 cargo test --release -p whisperforge-core load::tests::test_load_whisper_model -- --nocapture --exact
 
-# Format + lint (run before every commit)
+# Format (auto-fix) + lint
 cargo fmt --all && cargo clippy --all-targets --all-features
+
+# Git hooks — run once after cloning; hooks call mise tasks on commit/push
+mise run setup
 
 # Run the CLI
 cargo run --release -p whisperforge-cli -- -a audio.wav -m tiny_en_converted
