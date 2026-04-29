@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use burn::backend::NdArray;
-use burn::tensor::{Int, Tensor};
 use burn_ndarray::NdArrayDevice;
 use clap::Parser;
 use std::cmp::Ordering;
@@ -8,8 +7,8 @@ use std::io::Write;
 use tokenizers::Tokenizer;
 use whisperforge_align::{AudioSegmenter, SrtEntry, SrtWriter};
 use whisperforge_core::{
-    audio, audio::AudioData, load_whisper, DecodingConfig, HybridDecoder, TranscriptionResult,
-    TranscriptionSegment, Whisper,
+    audio, audio::AudioData, forward_decoder_cached, load_whisper, DecodingConfig, HybridDecoder,
+    KvCache, TranscriptionResult, TranscriptionSegment, Whisper,
 };
 
 #[derive(Parser, Debug)]
@@ -101,29 +100,21 @@ fn transcribe_chunk(
     let encoder_output = model.forward_encoder(mel);
     let decoder = HybridDecoder::new(config.clone());
     let vocab_size = 51864usize;
-    let mut context: Vec<u32> = vec![sot, en, transcribe_tok, no_timestamps];
+    let init_tokens = [sot, en, transcribe_tok, no_timestamps];
     let mut all_logits: Vec<Vec<f32>> = Vec::new();
-    let budget = config.max_length.saturating_sub(context.len());
+    let budget = config.max_length.saturating_sub(init_tokens.len());
+
+    // Precompute encoder cross-attention K,V once; warm up self-attention cache
+    // with the initial prompt tokens. O(n) per subsequent step instead of O(n²).
+    let mut cache = KvCache::new(model, encoder_output);
+    let mut step_logits = Vec::new();
+    for &tok in &init_tokens {
+        step_logits =
+            forward_decoder_cached(model, tok, &mut cache, device).context("kv-cache warmup")?;
+    }
 
     for _ in 0..budget {
-        let token_tensor: Tensor<Backend, 2, Int> = Tensor::from_data(
-            burn::tensor::TensorData::new(
-                context.iter().map(|&t| t as i32).collect::<Vec<_>>(),
-                [1, context.len()],
-            ),
-            device,
-        );
-
-        let logits = model.forward_decoder(token_tensor, encoder_output.clone());
-        let [b, seq_len, _] = logits.dims();
-        let step: Vec<f32> = logits
-            .slice([0..b, (seq_len - 1)..seq_len, 0..vocab_size])
-            .squeeze::<1>()
-            .into_data()
-            .to_vec()
-            .context("extracting step logits")?;
-
-        let unconstrained = step
+        let unconstrained = step_logits
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
@@ -131,7 +122,8 @@ fn transcribe_chunk(
             .unwrap_or(eot);
 
         let greedy_next = if all_logits.is_empty() && unconstrained == eot {
-            step.iter()
+            step_logits
+                .iter()
                 .enumerate()
                 .filter(|&(i, _)| i as u32 != eot)
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
@@ -141,7 +133,7 @@ fn transcribe_chunk(
             unconstrained
         };
 
-        all_logits.push(step);
+        all_logits.push(step_logits);
 
         if greedy_next == eot {
             break;
@@ -154,7 +146,8 @@ fn transcribe_chunk(
             }
         }
 
-        context.push(greedy_next);
+        step_logits = forward_decoder_cached(model, greedy_next, &mut cache, device)
+            .context("kv-cache decode step")?;
     }
 
     if let Some(first) = all_logits.first_mut() {

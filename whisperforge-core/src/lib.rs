@@ -4,12 +4,14 @@ use burn::tensor::{backend::Backend, Tensor};
 pub mod attn_extract;
 pub mod audio;
 pub mod decoding;
+pub mod kv_cache;
 pub mod load;
 pub mod model;
 pub mod transcribe;
 
 pub use attn_extract::forward_decoder_with_cross_attn;
 pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
+pub use kv_cache::{forward_decoder_cached, KvCache};
 pub use load::{load_config, load_whisper};
 pub use model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
 pub use transcribe::{transcribe_audio, WhisperTranscriber};
