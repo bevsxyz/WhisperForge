@@ -10,6 +10,7 @@ pub mod model;
 pub mod transcribe;
 
 pub use attn_extract::forward_decoder_with_cross_attn;
+pub use audio::batch_mel_spectrograms;
 pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
 pub use kv_cache::{forward_decoder_cached, KvCache};
 pub use load::{load_config, load_whisper};

@@ -8,8 +8,8 @@ use std::io::Write;
 use tokenizers::Tokenizer;
 use whisperforge_align::{AudioSegmenter, SrtEntry, SrtWriter};
 use whisperforge_core::{
-    audio, audio::AudioData, forward_decoder_cached, load_whisper, DecodingConfig, HybridDecoder,
-    KvCache, TranscriptionResult, TranscriptionSegment, Whisper,
+    audio, audio::AudioData, batch_mel_spectrograms, forward_decoder_cached, load_whisper,
+    DecodingConfig, HybridDecoder, KvCache, TranscriptionResult, TranscriptionSegment, Whisper,
 };
 
 #[derive(Parser, Debug)]
@@ -73,25 +73,17 @@ struct Args {
     debug_inference: bool,
 }
 
-/// Transcribe one audio chunk (≤ 30 s), streaming greedy tokens to stdout.
-/// Returns the final decoded text and the token ids for segment building.
+/// Decode one audio chunk given a pre-computed encoder output `[1, 1500, D]`.
+///
+/// Separating mel+encode from decode lets callers batch-encode multiple chunks
+/// in one GPU call before decoding each sequentially (see `run`).
 fn transcribe_chunk<B: Backend>(
-    audio: &AudioData,
+    encoder_output: burn::tensor::Tensor<B, 3>,
     model: &Whisper<B>,
     tokenizer: &Tokenizer,
     config: &DecodingConfig,
     device: &B::Device,
 ) -> Result<(String, Vec<u32>)> {
-    let mel = audio::compute_mel_spectrogram(audio, 400, 160, 80, device)?;
-
-    let expected = 3000usize;
-    let [batch, n_mels, n_frames] = mel.dims();
-    let mel = if n_frames > expected {
-        mel.slice([0..batch, 0..n_mels, 0..expected])
-    } else {
-        mel
-    };
-
     let tok = |s: &str, fb: u32| tokenizer.token_to_id(s).unwrap_or(fb);
     let sot = tok("<|startoftranscript|>", 50258);
     let en = tok("<|en|>", 50259);
@@ -100,7 +92,6 @@ fn transcribe_chunk<B: Backend>(
     let eot = tok("<|endoftext|>", 50257);
     let no_speech = tok("<|nospeech|>", 50362);
 
-    let encoder_output = model.forward_encoder(mel);
     let decoder = HybridDecoder::new(config.clone());
     let vocab_size = 51864usize;
     let init_tokens = [sot, en, transcribe_tok, no_timestamps];
@@ -326,10 +317,24 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
         total, args.decoding_preset
     );
 
+    // Batch-encode all chunks in one encoder forward pass, then decode sequentially.
+    // On GPU this amortises kernel launch overhead; on CPU it has the same cost.
+    let audio_chunks: Vec<AudioData> = chunks.iter().map(|(c, _, _)| c.clone()).collect();
+    println!("Encoding {} chunk(s) in one batch...", total);
+    let batch_mel =
+        batch_mel_spectrograms::<B>(&audio_chunks, 400, 160, 80, &device).context("mel batch")?;
+    let [n_batch, n_mels, n_frames] = batch_mel.dims();
+    let batch_mel = if n_frames > 3000 {
+        batch_mel.slice([0..n_batch, 0..n_mels, 0..3000])
+    } else {
+        batch_mel
+    };
+    let batch_enc = model.forward_encoder(batch_mel); // [N, 1500, D]
+
     let mut segments: Vec<TranscriptionSegment> = Vec::with_capacity(total);
     let mut parts: Vec<String> = Vec::with_capacity(total);
 
-    for (i, (chunk, start_s, end_s)) in chunks.iter().enumerate() {
+    for (i, (_, start_s, end_s)) in chunks.iter().enumerate() {
         if total > 1 {
             println!(
                 "\n[chunk {}/{}  {:.1}s – {:.1}s]",
@@ -342,8 +347,10 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
         print!(">>> ");
         std::io::stdout().flush().ok();
 
+        let [_, frames, d_model] = batch_enc.dims();
+        let enc_i = batch_enc.clone().slice([i..(i + 1), 0..frames, 0..d_model]);
         let (text, tokens) =
-            transcribe_chunk(chunk, &model, &tokenizer, &decoding_config, &device)?;
+            transcribe_chunk(enc_i, &model, &tokenizer, &decoding_config, &device)?;
         println!();
 
         if !text.is_empty() {

@@ -294,6 +294,29 @@ pub fn compute_mel_spectrogram<B: Backend>(
     Ok(tensor)
 }
 
+/// Stack mel spectrograms for multiple audio chunks into a single batch tensor.
+///
+/// Returns `[N, n_mels, 3000]` where N = `chunks.len()`. Each chunk is padded /
+/// trimmed to exactly 3000 frames by `compute_mel_spectrogram`, so all slices are
+/// the same shape and can be concatenated without further alignment.
+///
+/// Feeding the batch to the encoder in one call amortises GPU kernel launch
+/// overhead and keeps the GPU compute unit saturated across chunks.
+pub fn batch_mel_spectrograms<B: Backend>(
+    chunks: &[AudioData],
+    n_fft: usize,
+    hop_length: usize,
+    n_mels: usize,
+    device: &B::Device,
+) -> Result<Tensor<B, 3>> {
+    anyhow::ensure!(!chunks.is_empty(), "batch_mel_spectrograms: no chunks");
+    let mels: Vec<Tensor<B, 3>> = chunks
+        .iter()
+        .map(|c| compute_mel_spectrogram(c, n_fft, hop_length, n_mels, device))
+        .collect::<Result<_>>()?;
+    Ok(Tensor::cat(mels, 0))
+}
+
 /// Compute STFT and return magnitude spectrogram.
 /// Returns [n_freqs][n_frames] where n_freqs = n_fft/2 + 1
 fn compute_stft_magnitudes(samples: &[f32], n_fft: usize, hop_length: usize) -> Vec<Vec<f32>> {
