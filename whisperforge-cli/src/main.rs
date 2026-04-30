@@ -78,6 +78,11 @@ struct Args {
     #[arg(long, default_value = "0.7")]
     diarize_threshold: f32,
 
+    /// Encoder forward-pass batch size. Larger = faster but more GPU VRAM.
+    /// Default: 4 on --wgpu (prevents OOM), all chunks on CPU.
+    #[arg(long)]
+    encoder_batch_size: Option<usize>,
+
     /// Debug inference with different encoder inputs
     #[arg(long)]
     debug_inference: bool,
@@ -327,19 +332,32 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
         total, args.decoding_preset
     );
 
-    // Batch-encode all chunks in one encoder forward pass, then decode sequentially.
-    // On GPU this amortises kernel launch overhead; on CPU it has the same cost.
     let audio_chunks: Vec<AudioData> = chunks.iter().map(|(c, _, _)| c.clone()).collect();
-    println!("Encoding {} chunk(s) in one batch...", total);
-    let batch_mel =
-        batch_mel_spectrograms::<B>(&audio_chunks, 400, 160, 80, &device).context("mel batch")?;
-    let [n_batch, n_mels, n_frames] = batch_mel.dims();
-    let batch_mel = if n_frames > 3000 {
-        batch_mel.slice([0..n_batch, 0..n_mels, 0..3000])
-    } else {
-        batch_mel
-    };
-    let batch_enc = model.forward_encoder(batch_mel); // [N, 1500, D]
+    // GPU default=4 (safe for large-v2 on 4 GB VRAM); CPU default=16 (safe on ≥8 GB RAM).
+    let enc_batch = args
+        .encoder_batch_size
+        .unwrap_or(if args.wgpu { 4 } else { 16 })
+        .max(1);
+    println!(
+        "Encoding {} chunk(s) (encoder_batch_size={})...",
+        total, enc_batch
+    );
+
+    let mut enc_slices: Vec<burn::tensor::Tensor<B, 3>> = Vec::with_capacity(total);
+    for sub in audio_chunks.chunks(enc_batch) {
+        let mel = batch_mel_spectrograms::<B>(sub, 400, 160, 80, &device).context("mel batch")?;
+        let [n_sub, n_mels, n_frames] = mel.dims();
+        let mel = if n_frames > 3000 {
+            mel.slice([0..n_sub, 0..n_mels, 0..3000])
+        } else {
+            mel
+        };
+        let enc = model.forward_encoder(mel); // [sub_size, 1500, D]
+        let [_, frames, d_model] = enc.dims();
+        for j in 0..n_sub {
+            enc_slices.push(enc.clone().slice([j..j + 1, 0..frames, 0..d_model]));
+        }
+    }
 
     let mut segments: Vec<TranscriptionSegment> = Vec::with_capacity(total);
     let mut parts: Vec<(String, Vec<f32>)> = Vec::with_capacity(total);
@@ -357,8 +375,7 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
         print!(">>> ");
         std::io::stdout().flush().ok();
 
-        let [_, frames, d_model] = batch_enc.dims();
-        let enc_i = batch_enc.clone().slice([i..(i + 1), 0..frames, 0..d_model]);
+        let enc_i = enc_slices[i].clone();
 
         // Extract speaker embedding before enc_i is consumed by transcribe_chunk.
         let speaker_emb = if args.diarize {
@@ -426,7 +443,7 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    println!("WhisperForge v0.1.0");
+    println!("WhisperForge v{}", env!("CARGO_PKG_VERSION"));
     println!("Loading model: {}", args.model);
 
     if args.wgpu {
