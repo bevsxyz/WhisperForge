@@ -16,5 +16,8 @@ serde = { workspace = true }
 # Audio processing
 rubato = { workspace = true }
 
+# Text processing
+tokenizers = { workspace = true }
+
 # Core dependencies
 whisperforge-core = { path = "../whisperforge-core" }

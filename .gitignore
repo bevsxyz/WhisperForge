@@ -16,6 +16,10 @@ Cargo.lock
 
 # Temporary / generated test files (not the committed LJSpeech fixtures)
 *.tmp.wav
+test_data/*_16k.wav
+
+# Audio inputs (MP3 support planned)
+*.mp3
 
 # Model files (large binaries)
 models/

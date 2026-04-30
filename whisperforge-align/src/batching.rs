@@ -1,100 +1,158 @@
+use std::cmp::Ordering;
+
 use crate::AudioSegment;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use burn::tensor::backend::Backend;
+use tokenizers::Tokenizer;
+use whisperforge_core::{
+    batch_mel_spectrograms, forward_decoder_cached, DecodingConfig, HybridDecoder, KvCache, Whisper,
+};
+
+const VOCAB_SIZE: usize = 51864;
+const EOT: u32 = 50257;
 
 pub struct BatchedTranscriber<B: Backend> {
+    model: Whisper<B>,
+    tokenizer: Tokenizer,
+    config: DecodingConfig,
+    device: B::Device,
     batch_size: usize,
-    phantom: std::marker::PhantomData<B>,
+    sample_rate: u32,
 }
 
 impl<B: Backend> BatchedTranscriber<B> {
-    pub fn new(batch_size: usize) -> Self {
+    pub fn new(
+        model: Whisper<B>,
+        tokenizer: Tokenizer,
+        config: DecodingConfig,
+        device: B::Device,
+        batch_size: usize,
+    ) -> Self {
         Self {
+            model,
+            tokenizer,
+            config,
+            device,
             batch_size,
-            phantom: std::marker::PhantomData,
+            sample_rate: 16_000,
         }
     }
 
-    /// Transcribe multiple audio segments in batches
+    pub fn with_sample_rate(mut self, sample_rate: u32) -> Self {
+        self.sample_rate = sample_rate;
+        self
+    }
+
+    /// Transcribe multiple audio segments in batches.
     pub fn transcribe_batch(&self, segments: &[AudioSegment]) -> Result<Vec<String>> {
         let mut results = Vec::with_capacity(segments.len());
-
-        // Process segments in batches
         for chunk in segments.chunks(self.batch_size) {
-            let batch_results = self.process_batch(chunk)?;
-            results.extend(batch_results);
+            results.extend(self.process_batch(chunk)?);
         }
-
         Ok(results)
     }
 
-    /// Process a single batch of segments
+    /// Process one batch: mel-encode all segments together, decode each sequentially.
     fn process_batch(&self, segments: &[AudioSegment]) -> Result<Vec<String>> {
-        // For now, return placeholder transcriptions
-        // In a real implementation, this would:
-        // 1. Convert audio to mel spectrograms
-        // 2. Run them through the Whisper model
-        // 3. Decode the results to text
+        let audio_chunks: Vec<_> = segments
+            .iter()
+            .map(|s| s.to_audio_data(self.sample_rate))
+            .collect();
+
+        let batch_mel = batch_mel_spectrograms::<B>(&audio_chunks, 400, 160, 80, &self.device)
+            .context("batch mel spectrogram")?;
+        let [n_batch, n_mels, n_frames] = batch_mel.dims();
+        let batch_mel = if n_frames > 3000 {
+            batch_mel.slice([0..n_batch, 0..n_mels, 0..3000])
+        } else {
+            batch_mel
+        };
+        let batch_enc = self.model.forward_encoder(batch_mel); // [N, 1500, D]
+        let [_, frames, d_model] = batch_enc.dims();
+
+        let tok = |s: &str, fb: u32| self.tokenizer.token_to_id(s).unwrap_or(fb);
+        let sot = tok("<|startoftranscript|>", 50258);
+        let en = tok("<|en|>", 50259);
+        let transcribe_tok = tok("<|transcribe|>", 50359);
+        let no_timestamps = tok("<|notimestamps|>", 50363);
+        let eot = tok("<|endoftext|>", EOT);
+        let no_speech = tok("<|nospeech|>", 50362);
+        let init_tokens = [sot, en, transcribe_tok, no_timestamps];
+        let budget = self.config.max_length.saturating_sub(init_tokens.len());
 
         let mut results = Vec::with_capacity(segments.len());
-        for segment in segments {
-            // Placeholder transcription based on duration
-            let duration = segment.duration();
-            let text = format!("[{:.1}s {:.1}s]", duration, duration);
-            results.push(text);
+
+        for i in 0..segments.len() {
+            let enc_i = batch_enc.clone().slice([i..(i + 1), 0..frames, 0..d_model]);
+
+            let mut cache = KvCache::new(&self.model, enc_i);
+            let mut step_logits = Vec::new();
+            for &t in &init_tokens {
+                step_logits = forward_decoder_cached(&self.model, t, &mut cache, &self.device)
+                    .context("kv-cache warmup")?;
+            }
+
+            let mut all_logits: Vec<Vec<f32>> = Vec::new();
+            for _ in 0..budget {
+                let unconstrained = step_logits
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap_or(eot);
+
+                let greedy_next = if all_logits.is_empty() && unconstrained == eot {
+                    step_logits
+                        .iter()
+                        .enumerate()
+                        .filter(|&(idx, _)| idx as u32 != eot)
+                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                        .map(|(idx, _)| idx as u32)
+                        .unwrap_or(eot)
+                } else {
+                    unconstrained
+                };
+
+                all_logits.push(step_logits);
+
+                if greedy_next == eot {
+                    break;
+                }
+
+                step_logits =
+                    forward_decoder_cached(&self.model, greedy_next, &mut cache, &self.device)
+                        .context("kv-cache decode step")?;
+            }
+
+            if let Some(first) = all_logits.first_mut() {
+                if (eot as usize) < first.len() {
+                    first[eot as usize] = f32::NEG_INFINITY;
+                }
+            }
+
+            let decoder = HybridDecoder::new(self.config.clone());
+            let tokens = decoder.decode_with_fallback(
+                &all_logits,
+                no_timestamps,
+                VOCAB_SIZE,
+                eot,
+                no_speech,
+                |ids| self.tokenizer.decode(ids, false).unwrap_or_default(),
+            )?;
+
+            let text_tokens: Vec<u32> = tokens.into_iter().filter(|&t| t < EOT).collect();
+            let text = self
+                .tokenizer
+                .decode(&text_tokens, true)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            results.push(text.trim().to_string());
         }
 
         Ok(results)
     }
 
-    /// Get optimal batch size for current hardware
+    /// Heuristic: optimal batch size for current hardware.
     pub fn optimal_batch_size() -> usize {
-        // Start with conservative batch size
-        // In a real implementation, this would consider:
-        // - GPU memory availability
-        // - Model size
-        // - Audio length
         16
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use burn::backend::NdArray;
-
-    #[test]
-    fn test_batch_creation() {
-        let transcriber = BatchedTranscriber::<NdArray>::new(8);
-        assert_eq!(transcriber.batch_size, 8);
-    }
-
-    #[test]
-    fn test_batch_processing() -> Result<()> {
-        let transcriber = BatchedTranscriber::<NdArray>::new(2);
-
-        let segments = vec![
-            AudioSegment {
-                start_sample: 0,
-                end_sample: 15999,
-                start_time: 0.0,
-                end_time: 1.0,
-                samples: vec![0.0; 16000],
-            },
-            AudioSegment {
-                start_sample: 16000,
-                end_sample: 31999,
-                start_time: 1.0,
-                end_time: 2.0,
-                samples: vec![0.0; 16000],
-            },
-        ];
-
-        let results = transcriber.transcribe_batch(&segments)?;
-        assert_eq!(results.len(), 2);
-        assert!(results[0].contains("[1.0s 1.0s]"));
-        assert!(results[1].contains("[1.0s 1.0s]"));
-
-        Ok(())
     }
 }
