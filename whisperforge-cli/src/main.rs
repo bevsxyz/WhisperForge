@@ -78,8 +78,8 @@ struct Args {
     #[arg(long, default_value = "0.7")]
     diarize_threshold: f32,
 
-    /// Encoder forward-pass batch size. Larger = faster but more GPU VRAM.
-    /// Default: 4 on --wgpu (prevents OOM), all chunks on CPU.
+    /// Encoder forward-pass batch size. Larger = faster but more VRAM/RAM.
+    /// Default: 1 on --wgpu (54 MB, safe on any GPU), 4 on CPU (216 MB, safe on ≥1 GB RAM).
     #[arg(long)]
     encoder_batch_size: Option<usize>,
 
@@ -333,10 +333,10 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
     );
 
     let audio_chunks: Vec<AudioData> = chunks.iter().map(|(c, _, _)| c.clone()).collect();
-    // GPU default=4 (safe for large-v2 on 4 GB VRAM); CPU default=16 (safe on ≥8 GB RAM).
+    // GPU default=1 (54 MB; safe after model weights); CPU default=4 (216 MB; safe on ≥1 GB RAM).
     let enc_batch = args
         .encoder_batch_size
-        .unwrap_or(if args.wgpu { 4 } else { 16 })
+        .unwrap_or(if args.wgpu { 1 } else { 4 })
         .max(1);
     println!(
         "Encoding {} chunk(s) (encoder_batch_size={})...",
