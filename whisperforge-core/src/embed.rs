@@ -1,5 +1,5 @@
 use anyhow::Result;
-use burn::tensor::{backend::Backend, Tensor};
+use burn::tensor::{Tensor, backend::Backend};
 
 /// Extract a speaker embedding from a Whisper encoder output tensor.
 ///

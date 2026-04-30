@@ -1,11 +1,18 @@
 [package]
 name = "whisperforge-convert"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "HuggingFace safetensors to Burn NamedMpk model converter for WhisperForge"
+keywords = ["whisperforge", "whisper", "burn", "huggingface"]
+categories = ["command-line-utilities", "science"]
 
 [dependencies]
-whisperforge-core = { path = "../whisperforge-core" }
+whisperforge-core = { path = "../whisperforge-core", version = "0.2.0" }
 burn = { workspace = true, features = ["std", "train"] }
 burn-ndarray = { workspace = true }
 candle-core = "0.9.1"

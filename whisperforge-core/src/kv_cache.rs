@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use burn::tensor::{backend::Backend, module::embedding, Int, Tensor, TensorData};
+use burn::tensor::{Int, Tensor, TensorData, backend::Backend, module::embedding};
 
-use crate::model::{qkv_attention, Whisper};
+use crate::model::{Whisper, qkv_attention};
 
 /// Precomputed and growing KV cache for O(n) per-step decoder inference.
 ///

@@ -1,4 +1,4 @@
-use burn::tensor::{activation::softmax, backend::Backend, module::embedding, Int, Tensor};
+use burn::tensor::{Int, Tensor, activation::softmax, backend::Backend, module::embedding};
 
 use crate::model::Whisper;
 

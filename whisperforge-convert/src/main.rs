@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use burn::backend::NdArray;
 use burn_ndarray::NdArrayDevice;
 use clap::Parser;
-use hf_hub::{api::tokio::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::tokio::Api};
 use whisperforge_convert::convert_openai_to_burn;
 
 #[derive(Parser, Debug)]

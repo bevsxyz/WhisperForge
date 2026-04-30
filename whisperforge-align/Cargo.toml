@@ -1,23 +1,23 @@
 [package]
 name = "whisperforge-align"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VAD segmentation, batched transcription, and SRT output for WhisperForge"
+keywords = ["whisperforge", "whisper", "vad", "srt", "subtitles"]
+categories = ["multimedia::audio"]
 
 [dependencies]
-# Workspace dependencies
 burn = { workspace = true, features = ["std", "ndarray"] }
 burn-ndarray = { workspace = true }
 earshot = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
-
-# Audio processing
 rubato = { workspace = true }
-
-# Text processing
 tokenizers = { workspace = true }
-
-# Core dependencies
-whisperforge-core = { path = "../whisperforge-core" }
+whisperforge-core = { path = "../whisperforge-core", version = "0.2.0" }

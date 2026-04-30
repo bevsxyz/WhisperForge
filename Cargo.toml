@@ -1,12 +1,21 @@
 [workspace]
 members = [
     "whisperforge-core",
-    "whisperforge-align", 
+    "whisperforge-align",
     "whisperforge-diarize",
     "whisperforge-cli",
     "whisperforge-convert",
 ]
 resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/bevsxyz/WhisperForge"
+homepage = "https://github.com/bevsxyz/WhisperForge"
+authors = ["bevsxyz"]
+rust-version = "1.85"
 
 [workspace.dependencies]
 # Core ML framework (minimal features for now)

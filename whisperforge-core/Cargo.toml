@@ -1,8 +1,15 @@
 [package]
 name = "whisperforge-core"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Whisper model, audio pipeline, and KV-cached decoding"
+keywords = ["whisperforge", "whisper", "speech-to-text", "burn", "ml"]
+categories = ["multimedia::audio", "science"]
 
 [dependencies]
 burn = { workspace = true, features = ["std", "ndarray", "wgpu"] }

@@ -8,9 +8,9 @@ use std::io::Write;
 use tokenizers::Tokenizer;
 use whisperforge_align::{AudioSegmenter, SrtEntry, SrtWriter};
 use whisperforge_core::{
+    DecodingConfig, HybridDecoder, KvCache, TranscriptionResult, TranscriptionSegment, Whisper,
     audio, audio::AudioData, batch_mel_spectrograms, extract_speaker_embedding,
-    forward_decoder_cached, load_whisper, DecodingConfig, HybridDecoder, KvCache,
-    TranscriptionResult, TranscriptionSegment, Whisper,
+    forward_decoder_cached, load_whisper,
 };
 use whisperforge_diarize::SpeakerDiarizer;
 
@@ -430,8 +430,8 @@ fn main() -> Result<()> {
     println!("Loading model: {}", args.model);
 
     if args.wgpu {
-        use burn::backend::wgpu::WgpuDevice;
         use burn::backend::Wgpu;
+        use burn::backend::wgpu::WgpuDevice;
         println!("Backend: WGPU (GPU)");
         let device = WgpuDevice::default();
         return run::<Wgpu>(args, device);

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use burn::tensor::{backend::Backend, Tensor};
+use burn::tensor::{Tensor, backend::Backend};
 
 pub mod attn_extract;
 pub mod audio;
@@ -14,10 +14,10 @@ pub use attn_extract::forward_decoder_with_cross_attn;
 pub use audio::batch_mel_spectrograms;
 pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
 pub use embed::extract_speaker_embedding;
-pub use kv_cache::{forward_decoder_cached, KvCache};
+pub use kv_cache::{KvCache, forward_decoder_cached};
 pub use load::{load_config, load_whisper};
 pub use model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
-pub use transcribe::{transcribe_audio, WhisperTranscriber};
+pub use transcribe::{WhisperTranscriber, transcribe_audio};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TranscriptionSegment {
@@ -46,7 +46,7 @@ pub struct TranscriptionResult {
 pub trait WhisperInference<B: Backend> {
     fn transcribe(&self, mel_features: Tensor<B, 3>) -> Result<TranscriptionResult>;
     fn transcribe_with_timestamps(&self, mel_features: Tensor<B, 3>)
-        -> Result<TranscriptionResult>;
+    -> Result<TranscriptionResult>;
 }
 
 pub const SPECIAL_TOKENS: &str = "<|startoftranscript|> <|translate|> <|transcribe|> <|en|> <|zh|> <|de|> <|es|> <|ru|> <|ko|> <|fr|> <|ja|> <|pt|> <|tr|> <|pl|> <|ca|> <|nl|> <|ar|> <|sv|> <|it|> <|id|> <|hi|> <|fi|> <|vi|> <|he|> <|uk|> <|el|> <|ms|> <|cs|> <|ro|> <|da|> <|hu|> <|ta|> <|no|> <|th|> <|ur|> <|hr|> <|bg|> <|lt|> <|la|> <|mi|> <|ml|> <|cy|> <|sk|> <|te|> <|fa|> <|lv|> <|bn|> <|sr|> <|az|> <|sl|> <|kn|> <|et|> <|mk|> <|br|> <|eu|> <|is|> <|hy|> <|ne|> <|mn|> <|bs|> <|kk|> <|sq|> <|sw|> <|gl|> <|mr|> <|pa|> <|si|> <|km|> <|sn|> <|yo|> <|so|> <|af|> <|oc|> <|ka|> <|be|> <|tg|> <|sd|> <|gu|> <|am|> <|yi|> <|lo|> <|uz|> <|fo|> <|ht|> <|ps|> <|tk|> <|nn|> <|mt|> <|sa|> <|lb|> <|my|> <|bo|> <|tl|> <|mg|> <|as|> <|tt|> <|haw|> <|ln|> <|ha|> <|ba|> <|jw|> <|su|> <|yue|> <|notimestamps|>";

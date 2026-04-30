@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use burn::{
     module::Module,
     record::{FullPrecisionSettings, NamedMpkFileRecorder},
-    tensor::{backend::Backend, Tensor, TensorData},
+    tensor::{Tensor, TensorData, backend::Backend},
 };
 use safetensors::SafeTensors;
 

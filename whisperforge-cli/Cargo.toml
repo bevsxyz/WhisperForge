@@ -1,17 +1,28 @@
 [package]
 name = "whisperforge-cli"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "GPU-accelerated Whisper transcription CLI (WGPU/CPU, speaker diarization)"
+keywords = ["whisperforge", "whisper", "speech-to-text", "wgpu", "cli"]
+categories = ["command-line-utilities", "multimedia::audio"]
 
 [[bin]]
 name = "whisperforge"
 path = "src/main.rs"
 
+[[bin]]
+name = "wf"
+path = "src/main.rs"
+
 [dependencies]
-whisperforge-core = { path = "../whisperforge-core" }
-whisperforge-align = { path = "../whisperforge-align" }
-whisperforge-diarize = { path = "../whisperforge-diarize" }
+whisperforge-core = { path = "../whisperforge-core", version = "0.2.0" }
+whisperforge-align = { path = "../whisperforge-align", version = "0.2.0" }
+whisperforge-diarize = { path = "../whisperforge-diarize", version = "0.2.0" }
 clap = { workspace = true, features = ["derive"] }
 anyhow = { workspace = true }
 serde = { workspace = true }

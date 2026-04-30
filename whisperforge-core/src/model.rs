@@ -7,11 +7,10 @@ use burn::{
     config::Config,
     module::{Module, Param},
     nn::{
-        self,
+        self, PaddingConfig1d,
         conv::{Conv1d, Conv1dConfig},
-        PaddingConfig1d,
     },
-    tensor::{activation::softmax, backend::Backend, Distribution, Int, Tensor},
+    tensor::{Distribution, Int, Tensor, activation::softmax, backend::Backend},
 };
 
 /// Configuration for the Whisper model

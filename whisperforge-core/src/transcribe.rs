@@ -1,15 +1,15 @@
 use std::cmp::Ordering;
 
 use anyhow::{Context, Result};
-use burn::tensor::{backend::Backend, Int, Tensor, TensorData};
+use burn::tensor::{Int, Tensor, TensorData, backend::Backend};
 use tokenizers::Tokenizer;
 
 use crate::{
+    TranscriptionResult, TranscriptionSegment, WhisperInference,
     attn_extract::forward_decoder_with_cross_attn,
     audio,
     decoding::{DecodingConfig, HybridDecoder},
     model::Whisper,
-    TranscriptionResult, TranscriptionSegment, WhisperInference,
 };
 
 const VOCAB_SIZE: usize = 51864;

@@ -12,7 +12,7 @@ use burn_ndarray::NdArrayDevice;
 use std::cmp::Ordering;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
-use whisperforge_core::{audio, load_whisper, DecodingConfig, HybridDecoder, Whisper};
+use whisperforge_core::{DecodingConfig, HybridDecoder, Whisper, audio, load_whisper};
 
 type Backend = NdArray<f32>;
 

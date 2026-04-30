@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use burn::tensor::backend::Backend;
 use tokenizers::Tokenizer;
 use whisperforge_core::{
-    batch_mel_spectrograms, forward_decoder_cached, DecodingConfig, HybridDecoder, KvCache, Whisper,
+    DecodingConfig, HybridDecoder, KvCache, Whisper, batch_mel_spectrograms, forward_decoder_cached,
 };
 
 const VOCAB_SIZE: usize = 51864;
