@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// SubRip format (.srt) subtitle entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +73,28 @@ pub struct SrtWriter {
     entries: Vec<SrtEntry>,
 }
 
+impl Default for SrtWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for SrtWriter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, entry) in self.entries.iter().enumerate() {
+            write!(
+                f,
+                "{}\n{} --> {}\n{}\n\n",
+                i + 1,
+                entry.start_time,
+                entry.end_time,
+                entry.text
+            )?;
+        }
+        Ok(())
+    }
+}
+
 impl SrtWriter {
     /// Create a new SRT writer
     pub fn new() -> Self {
@@ -85,27 +108,9 @@ impl SrtWriter {
         self.entries.push(entry);
     }
 
-    /// Convert all entries to SRT format string
-    pub fn to_string(&self) -> String {
-        let mut srt = String::new();
-
-        for (i, entry) in self.entries.iter().enumerate() {
-            srt.push_str(&format!(
-                "{}\n{} --> {}\n{}\n\n",
-                i + 1,
-                entry.start_time,
-                entry.end_time,
-                entry.text
-            ));
-        }
-
-        srt
-    }
-
     /// Write SRT content to a file
     pub fn write_to_file(&self, path: &str) -> Result<()> {
-        let content = self.to_string();
-        std::fs::write(path, content)?;
+        std::fs::write(path, self.to_string())?;
         Ok(())
     }
 

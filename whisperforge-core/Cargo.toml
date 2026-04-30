@@ -24,3 +24,9 @@ rubato = { workspace = true }
 hound = { workspace = true }
 rustfft = { workspace = true }
 audioadapter-buffers = "2.0"
+
+[lints.clippy]
+# Lints that fire inside the frozen model.rs which cannot be modified.
+let_and_return = "allow"
+legacy_numeric_constants = "allow"
+single_range_in_vec_init = "allow"

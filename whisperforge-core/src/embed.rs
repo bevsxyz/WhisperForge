@@ -56,7 +56,7 @@ mod tests {
     fn test_embedding_is_unit_norm() {
         let device = NdArrayDevice::default();
         let enc: Tensor<NdArray<f32>, 3> =
-            Tensor::from_data(TensorData::new(vec![1.0f32; 1 * 8 * 4], [1, 8, 4]), &device);
+            Tensor::from_data(TensorData::new(vec![1.0f32; 8 * 4], [1, 8, 4]), &device);
         let emb = extract_speaker_embedding(enc).unwrap();
         let norm: f32 = emb.iter().map(|v| v * v).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "embedding norm={norm}");

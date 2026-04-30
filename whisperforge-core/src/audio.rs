@@ -133,8 +133,8 @@ impl AudioData {
         let mut output_samples = Vec::with_capacity(actual_output_frames * self.channels as usize);
 
         for frame in 0..actual_output_frames {
-            for channel in 0..self.channels as usize {
-                output_samples.push(output_channels[channel][frame]);
+            for ch in &output_channels {
+                output_samples.push(ch[frame]);
             }
         }
 
@@ -319,6 +319,7 @@ pub fn batch_mel_spectrograms<B: Backend>(
 
 /// Compute STFT and return magnitude spectrogram.
 /// Returns [n_freqs][n_frames] where n_freqs = n_fft/2 + 1
+#[allow(clippy::needless_range_loop)]
 fn compute_stft_magnitudes(samples: &[f32], n_fft: usize, hop_length: usize) -> Vec<Vec<f32>> {
     let n_freqs = n_fft / 2 + 1;
     let n_frames = if samples.len() >= n_fft {
@@ -462,33 +463,23 @@ fn log_mel_spectrogram(mel_spec: &[Vec<f32>]) -> Vec<Vec<f32>> {
 
     let mut log_spec = vec![vec![0.0f32; n_frames]; n_mels];
 
-    for mel in 0..n_mels {
-        for frame in 0..n_frames {
-            // Clamp to avoid log(0), apply log10, normalize
-            let val = mel_spec[mel][frame].max(1e-10);
-            let log_val = val.log10();
-
-            // Whisper uses: max(log_spec, log_spec.max() - 8.0)
-            // Then scales to [-1, 1] range approximately
-            log_spec[mel][frame] = log_val;
+    for (log_row, mel_row) in log_spec.iter_mut().zip(mel_spec.iter()) {
+        for (log_val, &mel_val) in log_row.iter_mut().zip(mel_row.iter()) {
+            *log_val = mel_val.max(1e-10).log10();
         }
     }
 
     // Apply Whisper-style normalization
-    let mut log_max = -f32::INFINITY;
-    for mel in 0..n_mels {
-        for frame in 0..n_frames {
-            if log_spec[mel][frame] > log_max {
-                log_max = log_spec[mel][frame];
-            }
-        }
-    }
+    let log_max = log_spec
+        .iter()
+        .flat_map(|row| row.iter())
+        .copied()
+        .fold(-f32::INFINITY, f32::max);
 
     // Clamp to max - 8.0 and scale
-    for mel in 0..n_mels {
-        for frame in 0..n_frames {
-            let val = log_spec[mel][frame];
-            log_spec[mel][frame] = (val.max(log_max - 8.0) + 4.0) / 4.0;
+    for row in &mut log_spec {
+        for val in row {
+            *val = ((*val).max(log_max - 8.0) + 4.0) / 4.0;
         }
     }
 
@@ -600,7 +591,7 @@ mod tests {
         assert_eq!(magnitudes.len(), 201);
 
         // Should have multiple frames
-        assert!(magnitudes[0].len() > 0, "Should have at least one frame");
+        assert!(!magnitudes[0].is_empty(), "Should have at least one frame");
 
         // Magnitudes should be non-negative
         for freq_bin in &magnitudes {
@@ -670,7 +661,7 @@ mod tests {
             assert!(val.is_finite(), "All values should be finite");
             // After Whisper normalization, values should be roughly in [-1, 1] range
             assert!(
-                val >= -2.0 && val <= 2.0,
+                (-2.0..=2.0).contains(&val),
                 "Values should be in reasonable range, got {}",
                 val
             );

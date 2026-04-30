@@ -393,7 +393,7 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
         println!("Running speaker diarization...");
         let diarizer = SpeakerDiarizer::new().with_similarity_threshold(args.diarize_threshold);
         let labels = diarizer.assign_labels(&speaker_embeddings);
-        for (seg, label) in segments.iter_mut().zip(labels.into_iter()) {
+        for (seg, label) in segments.iter_mut().zip(labels) {
             seg.speaker = Some(label);
         }
     }

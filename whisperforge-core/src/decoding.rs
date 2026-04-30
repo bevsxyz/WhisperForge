@@ -226,16 +226,17 @@ impl Eq for BeamCandidate {}
 
 impl PartialOrd for BeamCandidate {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        // Reverse ordering for max-heap (higher score = higher priority)
-        other
-            .normalized_score(1.0)
-            .partial_cmp(&self.normalized_score(1.0))
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for BeamCandidate {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap_or(Ordering::Equal)
+        // Reverse ordering for max-heap (higher score = higher priority)
+        other
+            .normalized_score(1.0)
+            .partial_cmp(&self.normalized_score(1.0))
+            .unwrap_or(Ordering::Equal)
     }
 }
 
