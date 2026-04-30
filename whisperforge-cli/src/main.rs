@@ -226,7 +226,7 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Audio file is required (use --audio-file)"))?;
 
     println!("Loading audio: {}", audio_file);
-    let audio_data = audio::load_wav_file(audio_file)?;
+    let audio_data = audio::load_audio_file(audio_file)?;
     let processed_audio = audio_data.to_16khz_mono()?;
 
     println!(

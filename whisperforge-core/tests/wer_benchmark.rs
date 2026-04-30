@@ -92,7 +92,8 @@ fn transcribe(
     audio_path: &str,
     device: &NdArrayDevice,
 ) -> Result<String> {
-    let raw = audio::load_wav_file(audio_path).with_context(|| format!("loading {audio_path}"))?;
+    let raw =
+        audio::load_audio_file(audio_path).with_context(|| format!("loading {audio_path}"))?;
     eprintln!(
         "  [audio] path={audio_path} samples={} sr={} ch={}",
         raw.samples.len(),

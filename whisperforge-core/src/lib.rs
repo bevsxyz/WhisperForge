@@ -12,6 +12,7 @@ pub mod transcribe;
 
 pub use attn_extract::forward_decoder_with_cross_attn;
 pub use audio::batch_mel_spectrograms;
+pub use audio::load_audio_file;
 pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
 pub use embed::extract_speaker_embedding;
 pub use kv_cache::{KvCache, forward_decoder_cached};

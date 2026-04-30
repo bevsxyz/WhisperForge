@@ -42,8 +42,9 @@ cargo test --release -p whisperforge-core -p whisperforge-convert -p whisperforg
 # Format + lint
 cargo fmt --all && cargo clippy --all-targets --all-features
 
-# Transcribe (CPU)
-wf -a audio.wav -m tiny_en_converted
+# Transcribe WAV, MP3, FLAC, OGG, M4A (CPU)
+wf -a audio.mp3 -m tiny_en_converted
+wf -a audio.flac -m tiny_en_converted
 
 # Transcribe (GPU — Vulkan/DX12/Metal)
 wf -a audio.wav -m tiny_en_converted --wgpu
@@ -77,7 +78,7 @@ models/
 wf [OPTIONS]
 
 Options:
-  -a, --audio-file <FILE>          Input WAV file
+  -a, --audio-file <FILE>          Input audio file (WAV, MP3, FLAC, OGG, M4A)
   -m, --model <MODEL>              Model name under models/ [default: tiny_en_converted]
   -l, --language <LANG>            Language code [default: en]
   -o, --output <FILE>              Write output to file

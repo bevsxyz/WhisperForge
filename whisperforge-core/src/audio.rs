@@ -5,6 +5,14 @@ use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, WindowFu
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::f32::consts::PI;
 use std::path::Path;
+use symphonia::core::{
+    audio::SampleBuffer,
+    codecs::{CODEC_TYPE_NULL, DecoderOptions},
+    formats::FormatOptions,
+    io::MediaSourceStream,
+    meta::MetadataOptions,
+    probe::Hint,
+};
 
 // Whisper audio parameters
 pub const WHISPER_SAMPLE_RATE: u32 = 16000;
@@ -151,59 +159,100 @@ impl AudioData {
     }
 }
 
-pub fn load_wav_file<P: AsRef<Path>>(path: P) -> Result<AudioData> {
-    let reader =
-        hound::WavReader::open(&path).map_err(|e| anyhow!("Failed to open WAV file: {}", e))?;
+/// Load an audio file into raw f32 samples.
+///
+/// Supports WAV, MP3, FLAC, OGG/Vorbis, AAC/M4A, and MKV/WebM audio via
+/// symphonia. The file format is detected from the extension first; symphonia
+/// falls back to content-based probing when the extension is absent or unknown.
+///
+/// Returns interleaved f32 samples in `[-1.0, 1.0]` at the file's native
+/// sample rate and channel count. Call [`AudioData::to_16khz_mono`] to
+/// normalise before passing to the mel spectrogram pipeline.
+pub fn load_audio_file<P: AsRef<Path>>(path: P) -> Result<AudioData> {
+    let path = path.as_ref();
+    let file = std::fs::File::open(path)
+        .map_err(|e| anyhow!("Failed to open audio file '{}': {}", path.display(), e))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
-    let spec = reader.spec();
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
 
-    let samples: Vec<f32> = match (spec.sample_format, spec.bits_per_sample) {
-        (hound::SampleFormat::Float, _) => reader
-            .into_samples::<f32>()
-            .map(|s| s.unwrap_or(0.0))
-            .collect(),
-        (hound::SampleFormat::Int, 16) => reader
-            .into_samples::<i16>()
-            .map(|s| s.unwrap_or(0) as f32 / i16::MAX as f32)
-            .collect(),
-        (hound::SampleFormat::Int, 24 | 32) => reader
-            .into_samples::<i32>()
-            .map(|s| s.unwrap_or(0) as f32 / i32::MAX as f32)
-            .collect(),
-        (fmt, bits) => return Err(anyhow!("Unsupported WAV format: {:?} {}-bit", fmt, bits)),
-    };
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| anyhow!("Unsupported audio format '{}': {}", path.display(), e))?;
+
+    let mut format = probed.format;
+
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| anyhow!("No audio tracks found in '{}'", path.display()))?;
+
+    let track_id = track.id;
+    let sample_rate = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| anyhow!("Unknown sample rate in '{}'", path.display()))?;
+    let channels = track
+        .codec_params
+        .channels
+        .ok_or_else(|| anyhow!("Unknown channel count in '{}'", path.display()))?
+        .count() as u16;
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| anyhow!("Failed to create decoder for '{}': {}", path.display(), e))?;
+
+    let mut samples: Vec<f32> = Vec::new();
+    let mut sample_buf: Option<SampleBuffer<f32>> = None;
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(symphonia::core::errors::Error::IoError(e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(symphonia::core::errors::Error::ResetRequired) => {
+                sample_buf = None;
+                continue;
+            }
+            Err(e) => {
+                return Err(anyhow!("Error reading '{}': {}", path.display(), e));
+            }
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        let decoded = match decoder.decode(&packet) {
+            Ok(d) => d,
+            Err(symphonia::core::errors::Error::IoError(_)) => continue,
+            Err(e) => return Err(anyhow!("Decode error in '{}': {}", path.display(), e)),
+        };
+
+        let buf = sample_buf.get_or_insert_with(|| {
+            SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec())
+        });
+        buf.copy_interleaved_ref(decoded);
+        samples.extend_from_slice(buf.samples());
+    }
 
     Ok(AudioData {
         samples,
-        sample_rate: spec.sample_rate,
-        channels: spec.channels,
+        sample_rate,
+        channels,
     })
-}
-
-pub fn save_wav_file<P: AsRef<Path>>(audio: &AudioData, path: P) -> Result<()> {
-    use hound::{SampleFormat, WavWriter};
-
-    let spec = hound::WavSpec {
-        channels: audio.channels,
-        sample_rate: audio.sample_rate,
-        bits_per_sample: 32,
-        sample_format: SampleFormat::Float,
-    };
-
-    let mut writer =
-        WavWriter::create(path, spec).map_err(|e| anyhow!("Failed to create WAV writer: {}", e))?;
-
-    for &sample in &audio.samples {
-        writer
-            .write_sample(sample)
-            .map_err(|e| anyhow!("Failed to write sample: {}", e))?;
-    }
-
-    writer
-        .finalize()
-        .map_err(|e| anyhow!("Failed to finalize WAV file: {}", e))?;
-
-    Ok(())
 }
 
 /// Compute mel spectrogram for Whisper model input.

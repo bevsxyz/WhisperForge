@@ -21,9 +21,12 @@ flate2 = { workspace = true }
 rand = { workspace = true }
 tokenizers = { workspace = true }
 rubato = { workspace = true }
-hound = { workspace = true }
 rustfft = { workspace = true }
 audioadapter-buffers = "2.0"
+symphonia = { version = "0.5", default-features = false, features = [
+    "pcm", "wav", "flac", "vorbis", "ogg", "mkv",
+    "mp3", "aac", "isomp4",
+] }
 
 [lints.clippy]
 # Lints that fire inside the frozen model.rs which cannot be modified.
