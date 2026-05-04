@@ -66,9 +66,10 @@ struct Args {
     #[arg(long)]
     vad_threshold: Option<f32>,
 
-    /// Use the WGPU GPU backend instead of CPU (requires wgpu feature)
+    /// Use the CPU (NdArray) backend instead of the default WGPU backend.
+    /// Useful on systems without Vulkan/DX12/Metal support.
     #[arg(long)]
-    wgpu: bool,
+    cpu: bool,
 
     /// Enable speaker diarization (assigns SPEAKER_NN labels to segments)
     #[arg(long)]
@@ -79,7 +80,7 @@ struct Args {
     diarize_threshold: f32,
 
     /// Encoder forward-pass batch size. Larger = faster but more VRAM/RAM.
-    /// Default: 1 on --wgpu (54 MB, safe on any GPU), 4 on CPU (216 MB, safe on ≥1 GB RAM).
+    /// Default: 1 on WGPU (54 MB, safe on any GPU), 4 on --cpu (216 MB, safe on ≥1 GB RAM).
     #[arg(long)]
     encoder_batch_size: Option<usize>,
 
@@ -333,10 +334,10 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
     );
 
     let audio_chunks: Vec<AudioData> = chunks.iter().map(|(c, _, _)| c.clone()).collect();
-    // GPU default=1 (54 MB; safe after model weights); CPU default=4 (216 MB; safe on ≥1 GB RAM).
+    // WGPU default=1 (54 MB; safe after model weights); CPU default=4 (216 MB; safe on ≥1 GB RAM).
     let enc_batch = args
         .encoder_batch_size
-        .unwrap_or(if args.wgpu { 1 } else { 4 })
+        .unwrap_or(if args.cpu { 4 } else { 1 })
         .max(1);
     println!(
         "Encoding {} chunk(s) (encoder_batch_size={})...",
@@ -446,15 +447,15 @@ fn main() -> Result<()> {
     println!("WhisperForge v{}", env!("CARGO_PKG_VERSION"));
     println!("Loading model: {}", args.model);
 
-    if args.wgpu {
-        use burn::backend::Wgpu;
-        use burn::backend::wgpu::WgpuDevice;
-        println!("Backend: WGPU (GPU)");
-        let device = WgpuDevice::default();
-        return run::<Wgpu>(args, device);
+    if args.cpu {
+        println!("Backend: NdArray (CPU)");
+        let device = NdArrayDevice::default();
+        return run::<NdArray<f32>>(args, device);
     }
 
-    println!("Backend: NdArray (CPU)");
-    let device = NdArrayDevice::default();
-    run::<NdArray<f32>>(args, device)
+    use burn::backend::Wgpu;
+    use burn::backend::wgpu::WgpuDevice;
+    println!("Backend: WGPU (GPU)");
+    let device = WgpuDevice::default();
+    run::<Wgpu>(args, device)
 }

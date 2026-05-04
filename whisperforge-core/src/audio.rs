@@ -4,7 +4,10 @@ use burn::tensor::{Tensor, backend::Backend};
 use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, WindowFunction};
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::f32::consts::PI;
+
+#[cfg(feature = "file-io")]
 use std::path::Path;
+#[cfg(feature = "file-io")]
 use symphonia::core::{
     audio::SampleBuffer,
     codecs::{CODEC_TYPE_NULL, DecoderOptions},
@@ -168,6 +171,10 @@ impl AudioData {
 /// Returns interleaved f32 samples in `[-1.0, 1.0]` at the file's native
 /// sample rate and channel count. Call [`AudioData::to_16khz_mono`] to
 /// normalise before passing to the mel spectrogram pipeline.
+///
+/// For WASM / no-filesystem environments, construct [`AudioData`] directly
+/// from samples obtained via the Web Audio API.
+#[cfg(feature = "file-io")]
 pub fn load_audio_file<P: AsRef<Path>>(path: P) -> Result<AudioData> {
     let path = path.as_ref();
     let file = std::fs::File::open(path)

@@ -18,7 +18,7 @@ authors = ["bevsxyz"]
 rust-version = "1.85"
 
 [workspace.dependencies]
-# Core ML framework (minimal features for now)
+# Core ML framework
 burn = { version = "0.20.0", features = ["std", "ndarray"] }
 burn-ndarray = "0.20.0"
 

@@ -23,10 +23,14 @@ tokenizers = { workspace = true }
 rubato = { workspace = true }
 rustfft = { workspace = true }
 audioadapter-buffers = "2.0"
-symphonia = { version = "0.5", default-features = false, features = [
+symphonia = { version = "0.5", optional = true, default-features = false, features = [
     "pcm", "wav", "flac", "vorbis", "ogg", "mkv",
     "mp3", "aac", "isomp4",
 ] }
+
+[features]
+default = ["file-io"]
+file-io = ["dep:symphonia"]
 
 [lints.clippy]
 # Lints that fire inside the frozen model.rs which cannot be modified.

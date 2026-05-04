@@ -1,15 +1,16 @@
 // Model loading utilities for Whisper models saved in MessagePack format
 // Compatible with whisper-burn pre-converted models from HuggingFace
 
-use std::path::Path;
-
 use anyhow::{Context, Result};
 use burn::{
     module::Module,
-    record::{FullPrecisionSettings, NamedMpkFileRecorder},
+    record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder},
     tensor::backend::Backend,
 };
 use serde::Deserialize;
+
+#[cfg(feature = "file-io")]
+use std::path::Path;
 
 use crate::model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
 
@@ -59,28 +60,45 @@ impl From<WhisperModelConfig> for WhisperConfig {
     }
 }
 
-/// Load a Whisper model from whisper-burn format (.mpk + .cfg files)
+/// Load a Whisper config from raw JSON bytes.
+///
+/// Accepts the contents of a `.cfg` file as a byte slice. This is the
+/// WASM-compatible path — no filesystem access required.
+pub fn load_config_from_bytes(bytes: &[u8]) -> Result<WhisperConfig> {
+    let file_config: WhisperModelConfig =
+        serde_json::from_slice(bytes).with_context(|| "Failed to parse config JSON from bytes")?;
+    Ok(file_config.into())
+}
+
+/// Load a Whisper model from in-memory NamedMpk bytes.
+///
+/// `config` is the parsed model config (from [`load_config_from_bytes`]).
+/// `weights` is the raw contents of a `.mpk` file. This is the WASM-compatible
+/// path — no filesystem access required.
+pub fn load_whisper_from_bytes<B: Backend>(
+    config: &WhisperConfig,
+    weights: Vec<u8>,
+    device: &B::Device,
+) -> Result<Whisper<B>> {
+    let model = config.init::<B>(device);
+    let recorder = NamedMpkBytesRecorder::<FullPrecisionSettings>::new();
+    let model = model.load_record(
+        recorder
+            .load(weights, device)
+            .map_err(|e| anyhow::anyhow!("Failed to load model weights from bytes: {:?}", e))?,
+    );
+    Ok(model)
+}
+
+/// Load a Whisper model from whisper-burn format (.mpk + .cfg files).
 ///
 /// # Arguments
-/// * `model_path` - Path to the .mpk model file (without extension)
+/// * `model_path` - Path to the model files (without extension); `.cfg` and `.mpk` are appended
 /// * `device` - The device to load the model onto
-///
-/// # Returns
-/// The loaded Whisper model
-///
-/// # Example
-/// ```ignore
-/// use whisperforge_core::load::load_whisper;
-/// use burn::backend::NdArray;
-/// use burn_ndarray::NdArrayDevice;
-///
-/// let device = NdArrayDevice::default();
-/// let model = load_whisper::<NdArray<f32>>("models/tiny_en", &device)?;
-/// ```
+#[cfg(feature = "file-io")]
 pub fn load_whisper<B: Backend>(model_path: &str, device: &B::Device) -> Result<Whisper<B>> {
     let model_path = Path::new(model_path);
 
-    // Determine paths - handle both with and without extension
     let base_path = if model_path.extension().is_some() {
         model_path.with_extension("")
     } else {
@@ -90,55 +108,29 @@ pub fn load_whisper<B: Backend>(model_path: &str, device: &B::Device) -> Result<
     let config_path = base_path.with_extension("cfg");
     let weights_path = base_path.with_extension("mpk");
 
-    // Load config
-    let config_str = std::fs::read_to_string(&config_path)
+    let config_bytes = std::fs::read(&config_path)
         .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
+    let weights_bytes = std::fs::read(&weights_path)
+        .with_context(|| format!("Failed to read weights file: {}", weights_path.display()))?;
 
-    let file_config: WhisperModelConfig = serde_json::from_str(&config_str)
-        .with_context(|| format!("Failed to parse config JSON: {}", config_path.display()))?;
-
-    let config: WhisperConfig = file_config.into();
-
-    // Initialize model with random weights
-    let model = config.init::<B>(device);
-
-    // Load weights from .mpk file
-    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-
-    // Remove .mpk extension for load_file (it adds it automatically)
-    let weights_path_str = base_path.to_str().context("Invalid model path encoding")?;
-
-    let model = model
-        .load_file(weights_path_str, &recorder, device)
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to load model weights from {}: {:?}",
-                weights_path.display(),
-                e
-            )
-        })?;
-
-    Ok(model)
+    let config = load_config_from_bytes(&config_bytes)?;
+    load_whisper_from_bytes(&config, weights_bytes, device)
 }
 
-/// Load just the config without loading model weights
+/// Load just the config from a `.cfg` file path.
+#[cfg(feature = "file-io")]
 pub fn load_config(config_path: &str) -> Result<WhisperConfig> {
     let config_path = Path::new(config_path);
 
-    // Handle .cfg or base path
     let config_path = if config_path.extension().map(|e| e == "cfg").unwrap_or(false) {
         config_path.to_path_buf()
     } else {
         config_path.with_extension("cfg")
     };
 
-    let config_str = std::fs::read_to_string(&config_path)
+    let bytes = std::fs::read(&config_path)
         .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
-
-    let file_config: WhisperModelConfig = serde_json::from_str(&config_str)
-        .with_context(|| format!("Failed to parse config JSON: {}", config_path.display()))?;
-
-    Ok(file_config.into())
+    load_config_from_bytes(&bytes)
 }
 
 #[cfg(test)]
