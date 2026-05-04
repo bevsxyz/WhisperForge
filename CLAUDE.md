@@ -45,7 +45,7 @@ Five-crate Rust workspace using [Burn 0.20](https://burn.dev/) for GPU-accelerat
 ### Data flow
 
 ```
-Audio → hound load (dispatches on WAV format: f32 direct / i16÷32767 / i32÷i32::MAX) → resample to 16 kHz mono
+Audio → symphonia probe+decode (WAV/MP3/FLAC/OGG/M4A; format dispatch automatic) → resample to 16 kHz mono
   → zero-pad or truncate to exactly 480 000 samples (30 s at 16 kHz)
   → center=True reflect-pad n_fft/2=200 samples each end  →  480 400 samples
   → STFT: N_FFT=400, hop=160, Hann window  →  power spectrum |STFT|² (NOT |STFT|)
@@ -80,7 +80,7 @@ All model types are generic over `B: Backend`. CLI defaults to `NdArray<f32>` (C
 
 ### CLI decoding (`whisperforge-cli/src/main.rs`)
 
-All chunks are mel-encoded in a single batched encoder forward pass (`batch_mel_spectrograms` → `forward_encoder`). Each chunk is then decoded sequentially using `forward_decoder_cached` with a `KvCache` — O(n) per step instead of O(n²). The greedy loop passes per-step logits to `HybridDecoder.decode_with_fallback()` for quality-gated temperature fallback. EOT is suppressed at step 0. `--decoding-preset`, `--beam-size`, `--temperature`, and `--length-penalty` all take effect.
+All chunks are mel-encoded in sub-batched encoder passes (`batch_mel_spectrograms` → `forward_encoder`; default: 1 chunk/pass on GPU, 4 on CPU; override with `--encoder-batch-size`). Each chunk is then decoded sequentially using `forward_decoder_cached` with a `KvCache` — O(n) per step instead of O(n²). The greedy loop passes per-step logits to `HybridDecoder.decode_with_fallback()` for quality-gated temperature fallback. EOT is suppressed at step 0. `--decoding-preset`, `--beam-size`, `--temperature`, and `--length-penalty` all take effect.
 
 `--vad-enabled` / `--vad-threshold` are fully wired. When `--vad-enabled`, `AudioSegmenter` (which delegates to `VoiceActivityDetector::detect()`) segments audio into voice spans; silence is skipped; segments feed the transcription loop with accurate timestamps.
 
@@ -139,15 +139,13 @@ When the model has high confidence in `<|endoftext|>` as its first generated tok
 
 The EOT-domination bug (model predicts `<|endoftext|>` immediately) was caused by incorrect tensor name mapping in `whisperforge-convert/src/convert.rs`. OpenAI safetensors use `decoder.layers.X.encoder_attn.*`; the Burn model uses `blocks.X.cross_attn.*`. Verify this mapping exactly if conversion produces pathological outputs.
 
-### WAV loading: dispatch on format, not hardcoded i16
+### WAV loading: use symphonia, not hound
 
-`load_wav_file` must check `spec.sample_format` and `spec.bits_per_sample` before reading samples. IEEE float WAV (format code 3) is common for externally-resampled files and DAW exports — reading those bytes as i16 produces garbage spectrograms and "[Music]" hallucinations. The correct dispatch:
+`hound` was replaced by `symphonia-default 0.5` to support MP3/FLAC/OGG/M4A alongside WAV. Symphonia handles format dispatch (float/int/compressed) automatically — no manual `(sample_format, bits_per_sample)` switch needed. The old hound `into_samples::<f32>()` hazard (silent or clipped output on integer WAV) is gone.
 
-- `SampleFormat::Float` → `into_samples::<f32>()` directly
-- `SampleFormat::Int, 16` → `into_samples::<i16>()` ÷ `i16::MAX`
-- `SampleFormat::Int, 24|32` → `into_samples::<i32>()` ÷ `i32::MAX`
+### Stale incremental artifacts can mimic compiler incompatibilities
 
-Do **not** call `into_samples::<f32>()` unconditionally — for integer WAV files it applies hound's internal scaling which diverges from manual `i16/i16::MAX` and can produce silent or clipped spectrograms.
+Errors like missing methods, proc-macro failures, and macro hygiene breakage after a compiler version change are often stale `.rlib` files, not real bugs. Run `cargo clean` before concluding a crate is broken under the current toolchain. Confirmed: symphonia-core and tokenizers both appeared broken on Rust stable but worked cleanly after `cargo clean`.
 
 ### Burn 0.20 API differences
 
@@ -253,6 +251,16 @@ After phase 5 (Option A): per-token timestamps in all output formats.
 ✅ perf: batch spectrogram + encoder across all chunks
 ```
 - Done: `batch_mel_spectrograms()` in `audio.rs` computes all chunk mels and cats to `[N, 80, 3000]`. `run()` calls `model.forward_encoder(batch_mel)` once → `[N, 1500, D]`, then slices per chunk. `transcribe_chunk` now takes `encoder_output: Tensor<B, 3>` directly.
+
+```
+✅ feat: multi-format audio (MP3, FLAC, OGG, M4A) — replace hound with symphonia
+```
+- Done: `load_audio_file` in `audio.rs` uses symphonia probe+decode loop; auto-detects format; outputs f32 samples regardless of source format. Replaces all hound-based loading.
+
+```
+✅ fix: sub-batch encoder to prevent OOM on long audio
+```
+- Done: encoder forward pass runs in sub-batches (GPU default=1, 54 MB; CPU default=4, 216 MB); `--encoder-batch-size` overrides. GPU default=1 chosen because model weights (~136 MB) + batch-4 attention matrix (216 MB) exhausts most consumer GPUs.
 
 ```
 ⏸ perf: INT8 quantization for VRAM reduction
