@@ -159,9 +159,11 @@ Pre-existing; always exclude: `cargo test -p whisperforge-core -p whisperforge-c
 
 ## Roadmap
 
-Seven phases toward WhisperX feature parity in Rust. Work phases in order — each unblocks the next.
+Phases 1–7 (CLI, KV cache, GPU backend, diarization) complete. **New direction**: library + streaming + WASM.
 
-Each entry below is a single commit. Every commit must leave `cargo check --all` clean and the test suite passing before it lands.
+Five new phases toward browser-native and large-file transcription. Work in order — each unblocks the next.
+
+Each phase is one or more commits. Every commit must leave `cargo check --all` clean and the test suite passing before it lands.
 
 ### Phase 1 — Integration ✅ COMPLETE
 `load.rs` config from disk; HybridDecoder wired into CLI; `temperatures: Vec<f32>` fallback sequence. See git log.
@@ -314,7 +316,61 @@ After Option B: pyannote-level diarization quality, no ort required, GPU-acceler
 
 ---
 
-**Total: 26 commits across 7 phases.** Phases 1–7 Option A complete. Phase 7 Option B (ResNet293 upgrade) is the next planned work.
+### Phase A — Library API + Bytes Loading ✅ COMPLETE
+
+```
+✅ feat(phase-a): library API — bytes loaders, file-io feature gate, wgpu default
+```
+- Done: `load_config_from_bytes`, `load_whisper_from_bytes` added (WASM-compatible, no filesystem).
+- Done: `load_whisper`, `load_config`, `load_audio_file` gated behind `file-io` feature (on by default).
+- Done: `symphonia` marked optional; pulled in only under `file-io`.
+- Done: CLI default flipped to WGPU; `--cpu` flag opts out to NdArray.
+
+After Phase A: library is embeddable and publishable to crates.io; bytes-based loading unblocks WASM.
+
+### Phase B — Streaming Audio + Async I/O
+
+**Goal:** Process audio files larger than available RAM; unblock WASM (no blocking I/O) and real-time transcription.
+
+- `AudioStream` trait: frame-by-frame decoder for symphonia (no full buffer)
+- Streaming resampler: extract `Resampler` state machine from `AudioData::resample`
+- Async file I/O: `tokio::fs` with optional `async` feature flag
+- Chunk-based mel accumulation: 16 kHz frames → 1s chunks → 30s mel windows → batch encoder → decode
+- WASM microphone input: `MediaStream` callback integration for real-time transcription
+
+**Why before CubeCL:** Streaming foundation first; GPU optimization after we know it works at scale.
+
+### Phase B.5 — CubeCL Mel Pipeline
+
+**Goal:** Replace CPU `rustfft` STFT with CubeCL GPU kernels. Same kernels run natively (Vulkan/DX12/Metal) and in browser (WebGPU).
+
+- CubeCL STFT kernel: Hann window, reflect padding, power spectrum as `#[cube]` kernels
+- CubeCL mel filterbank: Slaney filters on GPU via matrix multiply
+- Backend dispatch: use GPU path when `B::supports_cube()`; fall back to rustfft
+- Zero CPU→GPU transfer for mel features; streaming-compatible
+
+### Phase C — Quantization
+
+**Goal:** Reduce model size 4× (FP32 ~150 MB → INT8 ~37 MB) for faster WASM downloads.
+
+- Audit Burn 0.20 quantization API (`QuantizationScheme`, `Calibration`)
+- Post-training quantization in `whisperforge-convert` with `--quantize int8`
+- Runtime support: `load_whisper` / `load_whisper_from_bytes` accept `Precision` enum
+
+**Why after B.5:** CubeCL is orthogonal; quantization applies to any backend.
+
+### Phase D — WASM Target
+
+**Goal:** Compile to `wasm32-unknown-unknown`; model + inference run client-side via WebGPU.
+
+- New crate `whisperforge-wasm`: thin `wasm-bindgen` wrapper
+- Exported API: `async fn transcribe(audio_samples, sample_rate, model_bytes, config_bytes) -> String`
+- Browser example: `index.html` + `main.js`; records via `getUserMedia`; streams results
+- Uses Phase B streaming (handles real-time microphone input) + Phase C quantization (browser-viable model size)
+
+---
+
+**Total: Phases 1–7 complete (26 commits); Phases A–D in progress (streaming + WASM).**
 
 ## Code conventions
 
