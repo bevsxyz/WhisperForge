@@ -139,6 +139,14 @@ impl AudioData {
             input_frames_next = resampler.input_frames_next();
         }
 
+        // Process any remaining input frames that didn't fill a full chunk
+        if input_frames_left > 0 {
+            let (_, frames_written) = resampler
+                .process_into_buffer(&input_adapter, &mut output_adapter, Some(&indexing))
+                .map_err(|e| anyhow!("Resampling final chunk failed: {}", e))?;
+            indexing.output_offset += frames_written;
+        }
+
         // Interleave the output channels back into a single vector
         let actual_output_frames = indexing.output_offset;
         let mut output_samples = Vec::with_capacity(actual_output_frames * self.channels as usize);

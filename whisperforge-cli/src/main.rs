@@ -8,9 +8,9 @@ use std::io::Write;
 use tokenizers::Tokenizer;
 use whisperforge_align::{AudioSegmenter, SrtEntry, SrtWriter};
 use whisperforge_core::{
-    DecodingConfig, HybridDecoder, KvCache, TranscriptionResult, TranscriptionSegment, Whisper,
-    audio, audio::AudioData, batch_mel_spectrograms, extract_speaker_embedding,
-    forward_decoder_cached, load_whisper,
+    AudioChunkIterator, DecodingConfig, HybridDecoder, KvCache, TranscriptionResult,
+    TranscriptionSegment, Whisper, audio, audio::AudioData, batch_mel_spectrograms,
+    extract_speaker_embedding, forward_decoder_cached, load_whisper,
 };
 use whisperforge_diarize::SpeakerDiarizer;
 
@@ -183,34 +183,6 @@ fn transcribe_chunk<B: Backend>(
     Ok((text.trim().to_string(), text_tokens))
 }
 
-/// Split audio into ≤ 30 s chunks with `overlap_samples` overlap.
-fn chunk_audio_fixed(
-    audio: &AudioData,
-    chunk_samples: usize,
-    overlap_samples: usize,
-) -> Vec<AudioData> {
-    let n = audio.samples.len();
-    if n <= chunk_samples {
-        return vec![audio.clone()];
-    }
-    let step = chunk_samples.saturating_sub(overlap_samples).max(1);
-    let mut chunks = Vec::new();
-    let mut start = 0;
-    while start < n {
-        let end = (start + chunk_samples).min(n);
-        chunks.push(AudioData {
-            samples: audio.samples[start..end].to_vec(),
-            sample_rate: audio.sample_rate,
-            channels: audio.channels,
-        });
-        if end == n {
-            break;
-        }
-        start += step;
-    }
-    chunks
-}
-
 /// Format a `TranscriptionResult` as an SRT subtitle string.
 /// When a segment has a speaker label, the text is prefixed `[SPEAKER_NN]: `.
 fn result_to_srt(result: &TranscriptionResult) -> String {
@@ -231,18 +203,8 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Audio file is required (use --audio-file)"))?;
 
-    println!("Loading audio: {}", audio_file);
-    let audio_data = audio::load_audio_file(audio_file)?;
-    let processed_audio = audio_data.to_16khz_mono()?;
-
-    println!(
-        "Audio loaded: {:.2}s, {}Hz",
-        processed_audio.duration(),
-        processed_audio.sample_rate
-    );
-
+    println!("Loading model: {}", args.model);
     let model_path = format!("models/{}", args.model);
-    println!("Loading model from: {}", model_path);
     let model: Whisper<B> = load_whisper(&model_path, &device)?;
     println!("Model loaded successfully!");
 
@@ -278,11 +240,18 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
         decoding_config.length_penalty
     );
 
-    let chunk_samples = 30 * processed_audio.sample_rate as usize;
-    let overlap_samples = processed_audio.sample_rate as usize;
-    let step_samples = chunk_samples - overlap_samples;
+    println!("Streaming audio from: {}", audio_file);
 
-    let chunks: Vec<(AudioData, f32, f32)> = if args.vad_enabled {
+    // VAD path: requires full audio, so fall back to eager loading for now
+    if args.vad_enabled {
+        let audio_data = audio::load_audio_file(audio_file)?;
+        let processed_audio = audio_data.to_16khz_mono()?;
+        println!(
+            "Audio loaded: {:.2}s, {}Hz (via VAD)",
+            processed_audio.duration(),
+            processed_audio.sample_rate
+        );
+
         let vad_threshold = args.vad_threshold.unwrap_or(0.5);
         let segmenter = AudioSegmenter::new(processed_audio.sample_rate)
             .with_vad_threshold(vad_threshold)
@@ -305,101 +274,167 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
                 seg.end_time - seg.start_time,
             );
         }
-        segments
-            .iter()
-            .map(|s| {
-                (
-                    s.to_audio_data(processed_audio.sample_rate),
-                    s.start_time as f32,
-                    s.end_time as f32,
-                )
-            })
-            .collect()
-    } else {
-        chunk_audio_fixed(&processed_audio, chunk_samples, overlap_samples)
-            .into_iter()
-            .enumerate()
-            .map(|(i, chunk)| {
-                let start = (i * step_samples) as f32 / processed_audio.sample_rate as f32;
-                let end = start + chunk.samples.len() as f32 / processed_audio.sample_rate as f32;
-                (chunk, start, end)
-            })
-            .collect()
-    };
 
-    let total = chunks.len();
-    println!(
-        "Transcribing {} chunk(s) with {} decoding...",
-        total, args.decoding_preset
-    );
+        let mut segments_out: Vec<TranscriptionSegment> = Vec::new();
+        let mut parts: Vec<(String, Vec<f32>)> = Vec::new();
 
-    let audio_chunks: Vec<AudioData> = chunks.iter().map(|(c, _, _)| c.clone()).collect();
+        for (idx, seg) in segments.iter().enumerate() {
+            let audio_chunk = seg.to_audio_data(processed_audio.sample_rate);
+            let mel = batch_mel_spectrograms::<B>(&[audio_chunk], 400, 160, 80, &device)
+                .context("mel spectrogram")?;
+            let [_, n_mels, n_frames] = mel.dims();
+            let mel = if n_frames > 3000 {
+                mel.slice([0..1, 0..n_mels, 0..3000])
+            } else {
+                mel
+            };
+            let enc = model.forward_encoder(mel);
+
+            println!(
+                "\n[segment {}/{}  {:.1}s – {:.1}s]",
+                idx + 1,
+                segments.len(),
+                seg.start_time,
+                seg.end_time
+            );
+            print!(">>> ");
+            std::io::stdout().flush().ok();
+
+            let speaker_emb = if args.diarize {
+                extract_speaker_embedding(enc.clone()).unwrap_or_default()
+            } else {
+                vec![]
+            };
+
+            let (text, tokens) =
+                transcribe_chunk(enc, &model, &tokenizer, &decoding_config, &device)?;
+            println!();
+
+            if !text.is_empty() {
+                segments_out.push(TranscriptionSegment {
+                    start: seg.start_time as f32,
+                    end: seg.end_time as f32,
+                    text: text.clone(),
+                    tokens,
+                    confidence: 1.0,
+                    token_timestamps: vec![],
+                    speaker: None,
+                });
+                parts.push((text, speaker_emb));
+            }
+        }
+
+        let speaker_embeddings: Vec<Vec<f32>> = parts.iter().map(|(_, e)| e.clone()).collect();
+        let texts: Vec<String> = parts.into_iter().map(|(t, _)| t).collect();
+
+        if args.diarize {
+            println!("Running speaker diarization...");
+            let diarizer = SpeakerDiarizer::new().with_similarity_threshold(args.diarize_threshold);
+            let labels = diarizer.assign_labels(&speaker_embeddings);
+            for (seg, label) in segments_out.iter_mut().zip(labels) {
+                seg.speaker = Some(label);
+            }
+        }
+
+        let result = TranscriptionResult {
+            text: texts.join(" "),
+            segments: segments_out,
+            language: Some(args.language.clone()),
+        };
+
+        let output_body = match args.output_format.as_str() {
+            "srt" => result_to_srt(&result),
+            "json" => serde_json::to_string_pretty(&result)
+                .context("serialising TranscriptionResult to JSON")?,
+            _ => result.text.clone(),
+        };
+
+        println!("\nTranscription result:\n----------------------------------------");
+        println!("{}", output_body);
+        println!("----------------------------------------");
+
+        if let Some(output_path) = args.output {
+            std::fs::write(&output_path, &output_body)?;
+            println!("Saved to: {}", output_path);
+        }
+
+        return Ok(());
+    }
+
+    // Streaming path (no VAD): on-demand chunk iteration
+    let mut stream = AudioChunkIterator::default_whisper(audio_file)?;
+
     // WGPU default=1 (54 MB; safe after model weights); CPU default=4 (216 MB; safe on ≥1 GB RAM).
     let enc_batch = args
         .encoder_batch_size
         .unwrap_or(if args.cpu { 4 } else { 1 })
         .max(1);
+
     println!(
-        "Encoding {} chunk(s) (encoder_batch_size={})...",
-        total, enc_batch
+        "Transcribing with {} decoding (encoder_batch_size={})...",
+        args.decoding_preset, enc_batch
     );
 
-    let mut enc_slices: Vec<burn::tensor::Tensor<B, 3>> = Vec::with_capacity(total);
-    for sub in audio_chunks.chunks(enc_batch) {
-        let mel = batch_mel_spectrograms::<B>(sub, 400, 160, 80, &device).context("mel batch")?;
+    let mut segments: Vec<TranscriptionSegment> = Vec::new();
+    let mut parts: Vec<(String, Vec<f32>)> = Vec::new();
+    let mut chunk_index = 0;
+
+    // Streaming encoder-batch loop: accumulate enc_batch chunks, process them together
+    loop {
+        let sub: Vec<whisperforge_core::AudioChunk> =
+            (&mut stream).take(enc_batch).collect::<Result<_>>()?;
+        if sub.is_empty() {
+            break;
+        }
+
+        let audio_views: Vec<AudioData> = sub
+            .iter()
+            .map(|c| AudioData::new(c.samples.clone(), 16000, 1))
+            .collect();
+        let mel = batch_mel_spectrograms::<B>(&audio_views, 400, 160, 80, &device)
+            .context("mel batch")?;
         let [n_sub, n_mels, n_frames] = mel.dims();
         let mel = if n_frames > 3000 {
             mel.slice([0..n_sub, 0..n_mels, 0..3000])
         } else {
             mel
         };
-        let enc = model.forward_encoder(mel); // [sub_size, 1500, D]
-        let [_, frames, d_model] = enc.dims();
-        for j in 0..n_sub {
-            enc_slices.push(enc.clone().slice([j..j + 1, 0..frames, 0..d_model]));
-        }
-    }
+        let enc = model.forward_encoder(mel);
 
-    let mut segments: Vec<TranscriptionSegment> = Vec::with_capacity(total);
-    let mut parts: Vec<(String, Vec<f32>)> = Vec::with_capacity(total);
+        for (j, chunk) in sub.iter().enumerate() {
+            chunk_index += 1;
+            let [_, frames, d_model] = enc.dims();
+            let enc_slice = enc.clone().slice([j..j + 1, 0..frames, 0..d_model]);
 
-    for (i, (_, start_s, end_s)) in chunks.iter().enumerate() {
-        if total > 1 {
             println!(
-                "\n[chunk {}/{}  {:.1}s – {:.1}s]",
-                i + 1,
-                total,
-                start_s,
-                end_s
+                "\n[chunk {}  {:.1}s – {:.1}s]",
+                chunk_index, chunk.start_sec, chunk.end_sec
             );
-        }
-        print!(">>> ");
-        std::io::stdout().flush().ok();
+            print!(">>> ");
+            std::io::stdout().flush().ok();
 
-        let enc_i = enc_slices[i].clone();
+            let speaker_emb = if args.diarize {
+                extract_speaker_embedding(enc_slice.clone()).unwrap_or_default()
+            } else {
+                vec![]
+            };
 
-        // Extract speaker embedding before enc_i is consumed by transcribe_chunk.
-        let speaker_emb = if args.diarize {
-            extract_speaker_embedding(enc_i.clone()).unwrap_or_default()
-        } else {
-            vec![]
-        };
+            let (text, tokens) =
+                transcribe_chunk(enc_slice, &model, &tokenizer, &decoding_config, &device)?;
+            println!();
 
-        let (text, tokens) =
-            transcribe_chunk(enc_i, &model, &tokenizer, &decoding_config, &device)?;
-        println!();
-
-        if !text.is_empty() {
-            segments.push(TranscriptionSegment {
-                start: *start_s,
-                end: *end_s,
-                text: text.clone(),
-                tokens,
-                confidence: 1.0,
-                token_timestamps: vec![],
-                speaker: None,
-            });
-            parts.push((text, speaker_emb));
+            if !text.is_empty() {
+                segments.push(TranscriptionSegment {
+                    start: chunk.start_sec,
+                    end: chunk.end_sec,
+                    text: text.clone(),
+                    tokens,
+                    confidence: 1.0,
+                    token_timestamps: vec![],
+                    speaker: None,
+                });
+                parts.push((text, speaker_emb));
+            }
         }
     }
 

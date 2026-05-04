@@ -10,6 +10,9 @@ pub mod load;
 pub mod model;
 pub mod transcribe;
 
+#[cfg(feature = "file-io")]
+pub mod audio_stream;
+
 pub use attn_extract::forward_decoder_with_cross_attn;
 pub use audio::batch_mel_spectrograms;
 pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
@@ -21,6 +24,8 @@ pub use transcribe::{WhisperTranscriber, transcribe_audio};
 
 #[cfg(feature = "file-io")]
 pub use audio::load_audio_file;
+#[cfg(feature = "file-io")]
+pub use audio_stream::{AudioChunk, AudioChunkIterator};
 #[cfg(feature = "file-io")]
 pub use load::{load_config, load_whisper};
 
