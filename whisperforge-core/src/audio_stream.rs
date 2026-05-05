@@ -232,8 +232,9 @@ impl AudioChunkIterator {
             samples.truncate(target_samples);
         }
 
-        // If we have nothing, we're done
-        if samples.is_empty() {
+        // No new content beyond what we prepended — EOF with nothing more to yield
+        if samples.len() <= overlap_len {
+            self.overlap_buf.clear();
             return Ok(None);
         }
 
