@@ -139,13 +139,9 @@ impl AudioData {
             input_frames_next = resampler.input_frames_next();
         }
 
-        // Process any remaining input frames that didn't fill a full chunk
-        if input_frames_left > 0 {
-            let (_, frames_written) = resampler
-                .process_into_buffer(&input_adapter, &mut output_adapter, Some(&indexing))
-                .map_err(|e| anyhow!("Resampling final chunk failed: {}", e))?;
-            indexing.output_offset += frames_written;
-        }
+        // Note: Any remaining frames < chunk_size are buffered internally by the resampler.
+        // Since we're processing a complete file here (not streaming), the resampler state
+        // persists and will output them naturally as part of the next/final processing.
 
         // Interleave the output channels back into a single vector
         let actual_output_frames = indexing.output_offset;

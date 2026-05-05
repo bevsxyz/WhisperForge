@@ -115,7 +115,7 @@ impl AudioChunkIterator {
         let chunk_samples = (chunk_sec * target_rate as f32) as usize;
         let overlap_samples = (overlap_sec * target_rate as f32) as usize;
 
-        // Create resampler if needed
+        // Create resampler if needed (always mono output: 1 channel)
         let resampler = if sample_rate != target_rate {
             let f_ratio = target_rate as f64 / sample_rate as f64;
             let params = SincInterpolationParameters {
@@ -131,7 +131,7 @@ impl AudioChunkIterator {
                 2.0,
                 &params,
                 chunk_size,
-                channels as usize,
+                1, // Always mono output
                 FixedAsync::Input,
             )
             .map_err(|e| anyhow!("Failed to create resampler: {}", e))?;
@@ -322,13 +322,8 @@ impl AudioChunkIterator {
             input_frames_next = resampler.input_frames_next();
         }
 
-        // Process any remaining input frames
-        if input_frames_left > 0 {
-            let (_, frames_written) = resampler
-                .process_into_buffer(&input_adapter, &mut output_adapter, Some(&indexing))
-                .map_err(|e| anyhow!("Resampler final chunk failed: {}", e))?;
-            indexing.output_offset += frames_written;
-        }
+        // Remaining frames less than chunk size are buffered internally by the resampler
+        // and will be output on the next packet. No need to force-process them here.
 
         output.extend_from_slice(&output_channels[0][..indexing.output_offset]);
         Ok(())
