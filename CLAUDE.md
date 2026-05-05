@@ -328,17 +328,23 @@ After Option B: pyannote-level diarization quality, no ort required, GPU-acceler
 
 After Phase A: library is embeddable and publishable to crates.io; bytes-based loading unblocks WASM.
 
-### Phase B — Streaming Audio + Async I/O
+### Phase B — Streaming Audio ✅ COMPLETE
 
-**Goal:** Process audio files larger than available RAM; unblock WASM (no blocking I/O) and real-time transcription.
+```
+✅ feat: implement Phase B streaming audio pipeline
+```
+- Done: `whisperforge-core/src/audio_stream.rs` — `AudioChunkIterator` pull-based iterator decodes symphonia packets on-demand, resamples incrementally with rubato state machine (chunk_size=128, 1 mono channel), yields 30s chunks with 1s overlap. Holds at most one packet + resampler state + overlap window (~2 MB) at a time.
+- Done: CLI streaming loop replaces eager load-all-then-process — collects `enc_batch` chunks on-demand, encodes together, decodes sequentially. Peak working set = model + enc_batch × 30s audio + mel tensor + encoder output, regardless of file length.
+- Done: VAD path still uses eager loading (VAD requires full audio signal); documented limitation.
+- Done: `AudioChunk` and `AudioChunkIterator` exported from `lib.rs` under `file-io` feature.
+- Async file I/O (`tokio::fs`) and WASM microphone input (`MediaStream`) deferred to Phase D — JS drives async in the browser anyway.
 
-- `AudioStream` trait: frame-by-frame decoder for symphonia (no full buffer)
-- Streaming resampler: extract `Resampler` state machine from `AudioData::resample`
-- Async file I/O: `tokio::fs` with optional `async` feature flag
-- Chunk-based mel accumulation: 16 kHz frames → 1s chunks → 30s mel windows → batch encoder → decode
-- WASM microphone input: `MediaStream` callback integration for real-time transcription
+**Bugs fixed post-ship:**
+- Stereo MP3: resampler created for N channels but received mono data → fixed by creating resampler with 1 channel.
+- MP3 packet underflow: 576 mono frames/packet < 1024 chunk_size → no resampling occurred → fixed by lowering chunk_size to 128.
+- EOF overlap loop: after last real chunk, overlap buffer recycled as new chunk forever → fixed by checking `samples.len() <= overlap_len`.
 
-**Why before CubeCL:** Streaming foundation first; GPU optimization after we know it works at scale.
+After Phase B: files of any length stream without OOM; `AudioChunkIterator` unblocks Phase D WASM microphone input.
 
 ### Phase B.5 — CubeCL Mel Pipeline
 
@@ -370,7 +376,7 @@ After Phase A: library is embeddable and publishable to crates.io; bytes-based l
 
 ---
 
-**Total: Phases 1–7 complete (26 commits); Phases A–D in progress (streaming + WASM).**
+**Total: Phases 1–7 + A–B complete (30 commits); Phases B.5–D planned (CubeCL mel, quantization, WASM).**
 
 ## Code conventions
 
