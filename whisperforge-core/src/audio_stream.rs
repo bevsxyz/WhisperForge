@@ -125,13 +125,12 @@ impl AudioChunkIterator {
                 oversampling_factor: 256,
                 window: WindowFunction::BlackmanHarris2,
             };
-            let chunk_size = 1024;
             let resampler = Async::<f32>::new_sinc(
                 f_ratio,
                 2.0,
                 &params,
-                chunk_size,
-                1, // Always mono output
+                128, // Small enough that any codec packet fits
+                1,   // Always mono output
                 FixedAsync::Input,
             )
             .map_err(|e| anyhow!("Failed to create resampler: {}", e))?;
