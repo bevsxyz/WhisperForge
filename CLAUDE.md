@@ -346,14 +346,26 @@ After Phase A: library is embeddable and publishable to crates.io; bytes-based l
 
 After Phase B: files of any length stream without OOM; `AudioChunkIterator` unblocks Phase D WASM microphone input.
 
-### Phase B.5 — CubeCL Mel Pipeline
+### Phase B.5 — CubeCL Mel Pipeline 🔄 IN PROGRESS
 
 **Goal:** Replace CPU `rustfft` STFT with CubeCL GPU kernels. Same kernels run natively (Vulkan/DX12/Metal) and in browser (WebGPU).
 
-- CubeCL STFT kernel: Hann window, reflect padding, power spectrum as `#[cube]` kernels
-- CubeCL mel filterbank: Slaney filters on GPU via matrix multiply
-- Backend dispatch: use GPU path when `B::supports_cube()`; fall back to rustfft
-- Zero CPU→GPU transfer for mel features; streaming-compatible
+```
+✅ perf: GPU mel filterbank + log compression via Burn tensor matmul
+```
+- Done: `compute_mel_spectrogram` now uses Burn tensor matmul for the mel filterbank (`[n_mels, n_freqs] @ [n_freqs, n_frames]`) and log10/normalization as GPU tensor ops. CPU STFT (rustfft) unchanged. Power spectrum is uploaded as a small tensor (~2 MB); matmul, log, clamp, normalize all run on device.
+- Eliminated the CPU triple-nested loop (80 × 3001 × 201 = 48M multiplications) that was the primary non-STFT bottleneck.
+
+```
+✅ feat: CubeCL DFT kernel in stft_gpu.rs (feature-gated cubecl-stft)
+```
+- Done: `whisperforge-core/src/stft_gpu.rs` — `stft_power_kernel<F: Float>` `#[cube(launch_unchecked)]` kernel. One cube per STFT frame, 201 units per cube. Cooperative shared-memory load of Hann-windowed samples; runtime DFT inner loop (not unrolled; generates loop instruction). `compute_stft_power_gpu<R: Runtime>` launcher returns `Vec<f32>` power spectrum.
+- Feature: `cubecl-stft` in `whisperforge-core/Cargo.toml` (adds `cubecl = "0.9"` dep). Exported as `pub use stft_gpu::compute_stft_power_gpu` under the feature gate.
+- Not yet wired into the main pipeline: `Wgpu = Fusion<CubeBackend<WgpuRuntime,...>>` — the Fusion wrapper prevents generic `B: Backend` dispatch from seeing the inner Runtime. Full wiring requires switching the CLI from `Wgpu` to bare `CubeBackend<WgpuRuntime,...>` (no Fusion). Deferred to Phase D prep.
+
+**Remaining:**
+- Wire `compute_stft_power_gpu` into `compute_mel_spectrogram` via bare `CubeBackend<WgpuRuntime,f32,i32,u32>` in CLI
+- Add correctness test comparing GPU DFT to CPU rustfft (needs `burn-wgpu` dev-dep)
 
 ### Phase C — Quantization
 
@@ -376,7 +388,7 @@ After Phase B: files of any length stream without OOM; `AudioChunkIterator` unbl
 
 ---
 
-**Total: Phases 1–7 + A–B complete (30 commits); Phases B.5–D planned (CubeCL mel, quantization, WASM).**
+**Total: Phases 1–7 + A–B complete; B.5 in progress (GPU mel matmul done, CubeCL STFT kernel written, wiring pending); Phases C–D planned.**
 
 ## Code conventions
 

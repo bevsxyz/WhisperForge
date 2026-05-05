@@ -7466,6 +7466,7 @@ dependencies = [
  "audioadapter-buffers",
  "burn",
  "burn-ndarray",
+ "cubecl",
  "flate2",
  "rand 0.8.6",
  "rubato",

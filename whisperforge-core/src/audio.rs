@@ -276,6 +276,9 @@ pub fn load_audio_file<P: AsRef<Path>>(path: P) -> Result<AudioData> {
 /// 4. Use power spectrum and Slaney-normalised mel filters.
 ///
 /// Always returns a tensor of shape `[1, n_mels, 3000]` (30 s at 100 fps).
+///
+/// The mel filterbank matmul and log-compression run on the target `B` backend
+/// (GPU when using WGPU); only the STFT uses CPU `rustfft`.
 pub fn compute_mel_spectrogram<B: Backend>(
     audio: &AudioData,
     n_fft: usize,
@@ -317,41 +320,44 @@ pub fn compute_mel_spectrogram<B: Backend>(
         centered_samples.push(padded_samples[n - 2 - i]);
     }
 
-    // Compute STFT power spectrogram
+    // CPU STFT via rustfft — fast O(N log N) per frame.
     let magnitudes = compute_stft_magnitudes(&centered_samples, n_fft, hop_length);
 
-    // Create mel filter bank
-    let mel_filters = create_mel_filter_bank(n_fft, n_mels, audio.sample_rate as f32);
-
-    // Apply mel filters: [n_mels, n_freqs] @ [n_freqs, n_frames] = [n_mels, n_frames]
-    // Drop last STFT frame (Python does magnitudes[..., :-1] after center=True STFT).
-    let n_frames = magnitudes[0].len().saturating_sub(1);
+    // Drop last frame to match Python's magnitudes[..., :-1] after center=True STFT.
     let n_freqs = n_fft / 2 + 1;
+    let n_frames = magnitudes[0].len().saturating_sub(1);
 
-    let mut mel_spec = vec![vec![0.0f32; n_frames]; n_mels];
-
-    for mel in 0..n_mels {
-        for frame in 0..n_frames {
-            let mut sum = 0.0;
-            for freq in 0..n_freqs {
-                sum += mel_filters[mel][freq] * magnitudes[freq][frame];
-            }
-            mel_spec[mel][frame] = sum;
-        }
-    }
-
-    // Log compression with clamping (Whisper uses log10 with specific scaling)
-    let log_spec = log_mel_spectrogram(&mel_spec);
-
-    let n_out = n_frames; // callers trim/pad to 3000 after receiving this
-    let flat: Vec<f32> = log_spec
-        .iter()
-        .flat_map(|row| row[..n_out].iter().copied())
+    // Upload power spectrum [n_freqs, n_frames] to device for GPU mel filterbank.
+    let ps_flat: Vec<f32> = (0..n_freqs)
+        .flat_map(|f| magnitudes[f][..n_frames].iter().copied())
         .collect();
-    let tensor = Tensor::<B, 1>::from_floats(flat.as_slice(), device);
-    let tensor = tensor.reshape([1, n_mels, n_out]);
+    let ps_tensor: Tensor<B, 2> =
+        Tensor::<B, 1>::from_floats(ps_flat.as_slice(), device).reshape([n_freqs, n_frames]);
 
-    Ok(tensor)
+    // Mel filter bank [n_mels, n_freqs] — precomputed on CPU, uploaded once per chunk.
+    let mel_filters = create_mel_filter_bank(n_fft, n_mels, audio.sample_rate as f32);
+    let mf_flat: Vec<f32> = mel_filters.into_iter().flatten().collect();
+    let mf_tensor: Tensor<B, 2> =
+        Tensor::<B, 1>::from_floats(mf_flat.as_slice(), device).reshape([n_mels, n_freqs]);
+
+    // GPU matmul: [n_mels, n_freqs] @ [n_freqs, n_frames] = [n_mels, n_frames].
+    let mel: Tensor<B, 2> = mf_tensor.matmul(ps_tensor);
+
+    // Log10 compression: log10(max(mel, 1e-10)) = ln(mel.clamp(1e-10)) * log10(e).
+    let log10_e = std::f32::consts::LOG10_E;
+    let log_mel: Tensor<B, 2> = mel.clamp_min(1e-10_f32).log().mul_scalar(log10_e);
+
+    // Whisper normalization: clamp to max-8 dB, shift to [0,1] range.
+    // Formula: result = (max(val, global_max - 8) + 4) / 4
+    //        = ((val - global_max).clamp_min(-8) + global_max + 4) / 4
+    let max_val: Tensor<B, 2> = log_mel.clone().max().reshape([1, 1]);
+    let log_mel = (log_mel - max_val.clone())
+        .clamp_min(-8.0_f32)
+        .add(max_val)
+        .add_scalar(4.0_f32)
+        .div_scalar(4.0_f32);
+
+    Ok(log_mel.reshape([1, n_mels, n_frames]))
 }
 
 /// Stack mel spectrograms for multiple audio chunks into a single batch tensor.
@@ -500,50 +506,6 @@ fn create_mel_filter_bank(n_fft: usize, n_mels: usize, sample_rate: f32) -> Vec<
     }
 
     filters
-}
-
-/// Apply log compression to mel spectrogram (Whisper-style).
-/// Uses log10 with specific clamping and scaling.
-fn log_mel_spectrogram(mel_spec: &[Vec<f32>]) -> Vec<Vec<f32>> {
-    let n_mels = mel_spec.len();
-    if n_mels == 0 {
-        return vec![];
-    }
-    let n_frames = mel_spec[0].len();
-
-    // Find max value for normalization
-    let mut max_val = 1e-10_f32;
-    for mel in mel_spec {
-        for &val in mel {
-            if val > max_val {
-                max_val = val;
-            }
-        }
-    }
-
-    let mut log_spec = vec![vec![0.0f32; n_frames]; n_mels];
-
-    for (log_row, mel_row) in log_spec.iter_mut().zip(mel_spec.iter()) {
-        for (log_val, &mel_val) in log_row.iter_mut().zip(mel_row.iter()) {
-            *log_val = mel_val.max(1e-10).log10();
-        }
-    }
-
-    // Apply Whisper-style normalization
-    let log_max = log_spec
-        .iter()
-        .flat_map(|row| row.iter())
-        .copied()
-        .fold(-f32::INFINITY, f32::max);
-
-    // Clamp to max - 8.0 and scale
-    for row in &mut log_spec {
-        for val in row {
-            *val = ((*val).max(log_max - 8.0) + 4.0) / 4.0;
-        }
-    }
-
-    log_spec
 }
 
 /// Pad or trim audio to exactly 30 seconds (Whisper chunk length).

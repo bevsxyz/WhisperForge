@@ -13,6 +13,9 @@ pub mod transcribe;
 #[cfg(feature = "file-io")]
 pub mod audio_stream;
 
+#[cfg(feature = "cubecl-stft")]
+pub mod stft_gpu;
+
 pub use attn_extract::forward_decoder_with_cross_attn;
 pub use audio::batch_mel_spectrograms;
 pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
@@ -28,6 +31,9 @@ pub use audio::load_audio_file;
 pub use audio_stream::{AudioChunk, AudioChunkIterator};
 #[cfg(feature = "file-io")]
 pub use load::{load_config, load_whisper};
+
+#[cfg(feature = "cubecl-stft")]
+pub use stft_gpu::compute_stft_power_gpu;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TranscriptionSegment {

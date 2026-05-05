@@ -27,10 +27,12 @@ symphonia = { version = "0.5", optional = true, default-features = false, featur
     "pcm", "wav", "flac", "vorbis", "ogg", "mkv",
     "mp3", "aac", "isomp4",
 ] }
+cubecl = { version = "0.9.0", optional = true }
 
 [features]
 default = ["file-io"]
 file-io = ["dep:symphonia"]
+cubecl-stft = ["dep:cubecl"]
 
 [lints.clippy]
 # Lints that fire inside the frozen model.rs which cannot be modified.
