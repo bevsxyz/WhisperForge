@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=$(python3 -c \"import sys,json; d=json.load(sys.stdin); ti=d.get('tool_input',d); print(ti.get('file_path',''))\" 2>/dev/null); case \"$FILE\" in *.rs) cargo fmt --all 2>/dev/null; cargo check --all 2>&1 | grep '^error' | head -20 ;; esac; true"
+            "command": "python3 -c \"\nimport sys,json,os,subprocess\nd=json.load(sys.stdin)\nti=d.get('tool_input',d)\nfp=ti.get('file_path','')\nif not fp.endswith('.rs'):\n    sys.exit(0)\n# walk up to workspace root (Cargo.toml with [workspace])\nroot=os.path.dirname(os.path.abspath(fp))\nwhile root and root!='/':\n    ct=os.path.join(root,'Cargo.toml')\n    if os.path.exists(ct) and '[workspace]' in open(ct).read():\n        break\n    root=os.path.dirname(root)\nif not root or root=='/':\n    sys.exit(0)\ncrates=['whisperforge-core/src','whisperforge-cli/src','whisperforge-convert/src','whisperforge-diarize/src','whisperforge-align/src']\npaths=[os.path.join(root,c) for c in crates if os.path.exists(os.path.join(root,c))]\nif not paths:\n    sys.exit(0)\nresult=subprocess.run(['rg','^pub (fn|struct|enum|trait|type|const)','--type','rust','-n']+paths,capture_output=True,text=True)\nopen(os.path.join(root,'CODEINDEX.md'),'w').write(result.stdout)\n\" 2>/dev/null; true"
           }
         ]
       }

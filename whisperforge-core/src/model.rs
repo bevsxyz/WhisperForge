@@ -306,11 +306,11 @@ pub struct AudioEncoderConfig {
 impl AudioEncoderConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> AudioEncoder<B> {
         let conv1 = Conv1dConfig::new(self.n_mels, self.n_audio_state, 3)
-            .with_padding(PaddingConfig1d::Explicit(1))
+            .with_padding(PaddingConfig1d::Explicit(1, 1))
             .init(device);
         let gelu1 = nn::Gelu::new();
         let conv2 = Conv1dConfig::new(self.n_audio_state, self.n_audio_state, 3)
-            .with_padding(PaddingConfig1d::Explicit(1))
+            .with_padding(PaddingConfig1d::Explicit(1, 1))
             .with_stride(2)
             .init(device);
         let gelu2 = nn::Gelu::new();

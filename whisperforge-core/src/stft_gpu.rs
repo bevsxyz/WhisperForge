@@ -17,10 +17,9 @@
 //!
 //! # Dispatch wiring
 //!
-//! The GPU STFT is not yet wired into `compute_mel_spectrogram` because the CLI's
-//! `Wgpu` backend is `Fusion<CubeBackend<WgpuRuntime,...>>` — the Fusion wrapper
-//! prevents a generic `B: Backend` bound from seeing the inner Runtime. Full
-//! wiring (switching CLI to bare `CubeBackend`) is deferred to Phase D.
+//! Wired into `compute_mel_spectrogram_wgpu` in `audio.rs` via
+//! `CubeBackend<WgpuRuntime,f32,i32,u32>` in the CLI. The Fusion-wrapped `Wgpu`
+//! alias cannot be used here because the Fusion wrapper hides the inner Runtime.
 
 use cubecl::prelude::*;
 
@@ -123,19 +122,96 @@ pub fn compute_stft_power_gpu<R: Runtime>(
             client,
             cube_count,
             cube_dim,
-            ArrayArg::from_raw_parts::<f32>(&samples_handle, padded_samples.len(), 1),
-            ArrayArg::from_raw_parts::<f32>(&output_handle, n_output, 1),
-            ScalarArg::new(n_fft as u32),
-            ScalarArg::new(hop_length as u32),
-            ScalarArg::new(n_freqs as u32),
+            ArrayArg::from_raw_parts(samples_handle, padded_samples.len()),
+            ArrayArg::from_raw_parts(output_handle.clone(), n_output),
+            n_fft as u32,
+            hop_length as u32,
+            n_freqs as u32,
             n_fft, // comptime n_fft_smem
-        )
-        .expect("STFT kernel launch failed");
+        );
     }
 
     // Read result back to host.
-    let raw = client.read_one(output_handle);
+    let raw = client.read_one_unchecked(output_handle);
     raw.chunks(4)
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn_wgpu::WgpuRuntime;
+    use cubecl::prelude::Runtime;
+    use rustfft::{FftPlanner, num_complex::Complex};
+    use std::f32::consts::PI;
+
+    /// Compute CPU DFT power spectrum matching the GPU kernel exactly.
+    /// Returns flat [n_frames, n_freqs] (frame-major) to match GPU layout.
+    fn cpu_stft_power(samples: &[f32], n_fft: usize, hop_length: usize, n_frames: usize) -> Vec<f32> {
+        let n_freqs = n_fft / 2 + 1;
+        let window: Vec<f32> = (0..n_fft)
+            .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f32 / n_fft as f32).cos()))
+            .collect();
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(n_fft);
+        let mut out = vec![0.0f32; n_frames * n_freqs];
+        let mut buf: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); n_fft];
+        for frame in 0..n_frames {
+            let start = frame * hop_length;
+            for i in 0..n_fft {
+                buf[i] = Complex::new(samples[start + i] * window[i], 0.0);
+            }
+            fft.process(&mut buf);
+            for k in 0..n_freqs {
+                out[frame * n_freqs + k] = buf[k].norm_sqr();
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_gpu_stft_matches_cpu() {
+        let device = burn_wgpu::WgpuDevice::default();
+        let client = WgpuRuntime::client(&device);
+
+        // 1 second of 440 Hz sine at 16 kHz, pre-padded (simulate center=True padding).
+        let n_samples = 16000 + 400; // 400 = n_fft reflect-padding already applied
+        let samples: Vec<f32> = (0..n_samples)
+            .map(|i| (2.0 * PI * 440.0 * i as f32 / 16000.0).sin())
+            .collect();
+
+        let n_fft = 400;
+        let hop = 160;
+        let n_freqs = n_fft / 2 + 1;
+        let n_frames = (samples.len() - n_fft) / hop + 1;
+
+        let gpu = compute_stft_power_gpu(&client, &samples, n_fft, hop, n_frames);
+        let cpu = cpu_stft_power(&samples, n_fft, hop, n_frames);
+
+        assert_eq!(gpu.len(), cpu.len(), "output length mismatch");
+
+        let mut max_abs_err = 0.0f32;
+        for (g, c) in gpu.iter().zip(cpu.iter()) {
+            let err = (g - c).abs();
+            if err > max_abs_err {
+                max_abs_err = err;
+            }
+        }
+        // Floating-point DFT vs FFT may differ slightly; 1e-3 is generous.
+        assert!(
+            max_abs_err < 1e-3,
+            "GPU/CPU STFT max abs error {max_abs_err} exceeds 1e-3 — outputs disagree"
+        );
+
+        // Verify frame-major layout: check a known bin for the 440 Hz sine.
+        // At 16 kHz, 440 Hz ≈ bin 11 (440 * 400 / 16000 = 11).
+        let bin_440 = (440.0 * n_fft as f32 / 16000.0).round() as usize;
+        let frame_mid = n_frames / 2;
+        let power_at_440 = gpu[frame_mid * n_freqs + bin_440];
+        assert!(
+            power_at_440 > 1.0,
+            "Expected significant power at 440 Hz bin {bin_440}, got {power_at_440}"
+        );
+    }
 }

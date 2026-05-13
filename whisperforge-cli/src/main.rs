@@ -197,7 +197,11 @@ fn result_to_srt(result: &TranscriptionResult) -> String {
     writer.to_string()
 }
 
-fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
+fn run<B: Backend>(
+    args: Args,
+    device: B::Device,
+    mel_fn: impl Fn(&[AudioData], &B::Device) -> Result<burn::tensor::Tensor<B, 3>>,
+) -> Result<()> {
     let audio_file = args
         .audio_file
         .as_ref()
@@ -280,8 +284,7 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
 
         for (idx, seg) in segments.iter().enumerate() {
             let audio_chunk = seg.to_audio_data(processed_audio.sample_rate);
-            let mel = batch_mel_spectrograms::<B>(&[audio_chunk], 400, 160, 80, &device)
-                .context("mel spectrogram")?;
+            let mel = mel_fn(&[audio_chunk], &device).context("mel spectrogram")?;
             let [_, n_mels, n_frames] = mel.dims();
             let mel = if n_frames > 3000 {
                 mel.slice([0..1, 0..n_mels, 0..3000])
@@ -391,8 +394,7 @@ fn run<B: Backend>(args: Args, device: B::Device) -> Result<()> {
             .iter()
             .map(|c| AudioData::new(c.samples.clone(), 16000, 1))
             .collect();
-        let mel = batch_mel_spectrograms::<B>(&audio_views, 400, 160, 80, &device)
-            .context("mel batch")?;
+        let mel = mel_fn(&audio_views, &device).context("mel batch")?;
         let [n_sub, n_mels, n_frames] = mel.dims();
         let mel = if n_frames > 3000 {
             mel.slice([0..n_sub, 0..n_mels, 0..3000])
@@ -485,12 +487,34 @@ fn main() -> Result<()> {
     if args.cpu {
         println!("Backend: NdArray (CPU)");
         let device = NdArrayDevice::default();
-        return run::<NdArray<f32>>(args, device);
+        return run::<NdArray<f32>>(args, device, |chunks, dev| {
+            batch_mel_spectrograms::<NdArray<f32>>(chunks, 400, 160, 80, dev)
+        });
     }
 
-    use burn::backend::Wgpu;
     use burn::backend::wgpu::WgpuDevice;
-    println!("Backend: WGPU (GPU)");
     let device = WgpuDevice::default();
-    run::<Wgpu>(args, device)
+
+    #[cfg(feature = "cubecl-stft")]
+    {
+        use burn_wgpu::CubeBackend;
+        use whisperforge_core::audio::{WgpuBackend, batch_mel_spectrograms_wgpu};
+        println!("Backend: WGPU (GPU, CubeCL STFT)");
+        return run::<CubeBackend<burn_wgpu::WgpuRuntime, f32, i32, u32>>(
+            args,
+            device,
+            |chunks, dev| batch_mel_spectrograms_wgpu(chunks, 400, 160, 80, dev),
+        );
+        #[allow(unreachable_code)]
+        let _: (WgpuBackend,) = unreachable!(); // suppress unused import
+    }
+
+    #[cfg(not(feature = "cubecl-stft"))]
+    {
+        use burn::backend::Wgpu;
+        println!("Backend: WGPU (GPU)");
+        run::<Wgpu>(args, device, |chunks, dev| {
+            batch_mel_spectrograms::<Wgpu>(chunks, 400, 160, 80, dev)
+        })
+    }
 }

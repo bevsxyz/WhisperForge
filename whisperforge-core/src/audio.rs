@@ -266,7 +266,71 @@ pub fn load_audio_file<P: AsRef<Path>>(path: P) -> Result<AudioData> {
     })
 }
 
-/// Compute mel spectrogram for Whisper model input.
+/// Resample/pad/center-reflect audio to produce centered samples ready for STFT.
+///
+/// Returns the reflection-padded sample vector that `compute_stft_magnitudes` and
+/// `compute_stft_power_gpu` both expect as input.
+fn prepare_centered_samples(audio: &AudioData, n_fft: usize) -> Result<Vec<f32>> {
+    let audio = if audio.channels != 1 || audio.sample_rate != WHISPER_SAMPLE_RATE {
+        audio.to_16khz_mono()?
+    } else {
+        audio.clone()
+    };
+
+    let target_samples = 30 * WHISPER_SAMPLE_RATE as usize;
+    let mut padded = audio.samples;
+    if padded.len() > target_samples {
+        padded.truncate(target_samples);
+    } else {
+        padded.resize(target_samples, 0.0);
+    }
+
+    // center=True STFT: reflect-pad n_fft/2 samples each side.
+    let pad_len = n_fft / 2;
+    let n = padded.len();
+    let mut centered = Vec::with_capacity(n + 2 * pad_len);
+    for i in (1..=pad_len).rev() {
+        centered.push(padded[i]);
+    }
+    centered.extend_from_slice(&padded);
+    for i in 0..pad_len {
+        centered.push(padded[n - 2 - i]);
+    }
+    Ok(centered)
+}
+
+/// Apply mel filterbank, log10 compression, and Whisper normalization to a
+/// power-spectrum tensor of shape `[n_freqs, n_frames]`.
+///
+/// Returns `[1, n_mels, n_frames]`.
+fn mel_compress<B: Backend>(
+    ps: Tensor<B, 2>,
+    n_mels: usize,
+    n_fft: usize,
+    device: &B::Device,
+) -> Tensor<B, 3> {
+    let [n_freqs, n_frames] = ps.dims();
+    let mel_filters = create_mel_filter_bank(n_fft, n_mels, WHISPER_SAMPLE_RATE as f32);
+    let mf_flat: Vec<f32> = mel_filters.into_iter().flatten().collect();
+    let mf_tensor: Tensor<B, 2> =
+        Tensor::<B, 1>::from_floats(mf_flat.as_slice(), device).reshape([n_mels, n_freqs]);
+
+    let mel: Tensor<B, 2> = mf_tensor.matmul(ps);
+
+    let log10_e = std::f32::consts::LOG10_E;
+    let log_mel: Tensor<B, 2> = mel.clamp_min(1e-10_f32).log().mul_scalar(log10_e);
+
+    let max_val: Tensor<B, 2> = log_mel.clone().max().reshape([1, 1]);
+    let log_mel = (log_mel - max_val.clone())
+        .clamp_min(-8.0_f32)
+        .add(max_val)
+        .add_scalar(4.0_f32)
+        .div_scalar(4.0_f32);
+
+    log_mel.reshape([1, n_mels, n_frames])
+}
+
+/// Compute mel spectrogram for Whisper model input (CPU STFT path).
 ///
 /// Matches OpenAI Whisper's Python preprocessing exactly:
 /// 1. Resample/convert to 16 kHz mono.
@@ -279,6 +343,7 @@ pub fn load_audio_file<P: AsRef<Path>>(path: P) -> Result<AudioData> {
 ///
 /// The mel filterbank matmul and log-compression run on the target `B` backend
 /// (GPU when using WGPU); only the STFT uses CPU `rustfft`.
+/// For full GPU STFT use `compute_mel_spectrogram_wgpu` (feature `cubecl-stft`).
 pub fn compute_mel_spectrogram<B: Backend>(
     audio: &AudioData,
     n_fft: usize,
@@ -286,79 +351,62 @@ pub fn compute_mel_spectrogram<B: Backend>(
     n_mels: usize,
     device: &B::Device,
 ) -> Result<Tensor<B, 3>> {
-    // Ensure mono audio at correct sample rate
-    let audio = if audio.channels != 1 || audio.sample_rate != WHISPER_SAMPLE_RATE {
-        audio.to_16khz_mono()?
-    } else {
-        audio.clone()
-    };
+    let centered = prepare_centered_samples(audio, n_fft)?;
+    let magnitudes = compute_stft_magnitudes(&centered, n_fft, hop_length);
 
-    // Pad or trim to exactly 30 s in sample space so silence carries the correct
-    // log-mel value (~-1.0) rather than 0.0.
-    let target_samples = 30 * WHISPER_SAMPLE_RATE as usize; // 480000
-    let mut padded_samples = audio.samples.clone();
-    if padded_samples.len() > target_samples {
-        padded_samples.truncate(target_samples);
-    } else {
-        padded_samples.resize(target_samples, 0.0);
-    }
-
-    // center=True STFT (Python torch.stft default): reflect-pad n_fft/2 samples on
-    // each side so each frame is centred on its sample rather than starting there.
-    // For 480000 samples + 400 pad → 3001 STFT frames; we drop the last to match
-    // Python's `magnitudes[..., :-1]` → exactly 3000 frames.
-    let pad_len = n_fft / 2;
-    let n = padded_samples.len();
-    let mut centered_samples = Vec::with_capacity(n + 2 * pad_len);
-    // Reflect-pad start: samples[pad_len], samples[pad_len-1], ..., samples[1]
-    for i in (1..=pad_len).rev() {
-        centered_samples.push(padded_samples[i]);
-    }
-    centered_samples.extend_from_slice(&padded_samples);
-    // Reflect-pad end: samples[n-2], samples[n-3], ..., samples[n-1-pad_len]
-    for i in 0..pad_len {
-        centered_samples.push(padded_samples[n - 2 - i]);
-    }
-
-    // CPU STFT via rustfft — fast O(N log N) per frame.
-    let magnitudes = compute_stft_magnitudes(&centered_samples, n_fft, hop_length);
-
-    // Drop last frame to match Python's magnitudes[..., :-1] after center=True STFT.
     let n_freqs = n_fft / 2 + 1;
     let n_frames = magnitudes[0].len().saturating_sub(1);
 
-    // Upload power spectrum [n_freqs, n_frames] to device for GPU mel filterbank.
     let ps_flat: Vec<f32> = (0..n_freqs)
         .flat_map(|f| magnitudes[f][..n_frames].iter().copied())
         .collect();
     let ps_tensor: Tensor<B, 2> =
         Tensor::<B, 1>::from_floats(ps_flat.as_slice(), device).reshape([n_freqs, n_frames]);
 
-    // Mel filter bank [n_mels, n_freqs] — precomputed on CPU, uploaded once per chunk.
-    let mel_filters = create_mel_filter_bank(n_fft, n_mels, audio.sample_rate as f32);
-    let mf_flat: Vec<f32> = mel_filters.into_iter().flatten().collect();
-    let mf_tensor: Tensor<B, 2> =
-        Tensor::<B, 1>::from_floats(mf_flat.as_slice(), device).reshape([n_mels, n_freqs]);
-
-    // GPU matmul: [n_mels, n_freqs] @ [n_freqs, n_frames] = [n_mels, n_frames].
-    let mel: Tensor<B, 2> = mf_tensor.matmul(ps_tensor);
-
-    // Log10 compression: log10(max(mel, 1e-10)) = ln(mel.clamp(1e-10)) * log10(e).
-    let log10_e = std::f32::consts::LOG10_E;
-    let log_mel: Tensor<B, 2> = mel.clamp_min(1e-10_f32).log().mul_scalar(log10_e);
-
-    // Whisper normalization: clamp to max-8 dB, shift to [0,1] range.
-    // Formula: result = (max(val, global_max - 8) + 4) / 4
-    //        = ((val - global_max).clamp_min(-8) + global_max + 4) / 4
-    let max_val: Tensor<B, 2> = log_mel.clone().max().reshape([1, 1]);
-    let log_mel = (log_mel - max_val.clone())
-        .clamp_min(-8.0_f32)
-        .add(max_val)
-        .add_scalar(4.0_f32)
-        .div_scalar(4.0_f32);
-
-    Ok(log_mel.reshape([1, n_mels, n_frames]))
+    Ok(mel_compress(ps_tensor, n_mels, n_fft, device))
 }
+
+/// Compute mel spectrogram using the GPU DFT kernel (feature `cubecl-stft`).
+///
+/// Identical output to `compute_mel_spectrogram` but the STFT runs on the WGPU
+/// device via CubeCL. Requires a bare `CubeBackend<WgpuRuntime,f32,i32,u32>` —
+/// the Fusion-wrapped `Wgpu` alias cannot expose the inner `Runtime`.
+#[cfg(feature = "cubecl-stft")]
+pub fn compute_mel_spectrogram_wgpu(
+    audio: &AudioData,
+    n_fft: usize,
+    hop_length: usize,
+    n_mels: usize,
+    device: &burn_wgpu::WgpuDevice,
+) -> Result<Tensor<WgpuBackend, 3>> {
+    use cubecl::prelude::Runtime;
+    let centered = prepare_centered_samples(audio, n_fft)?;
+    let n_freqs = n_fft / 2 + 1;
+    let n_frames_total = (centered.len() - n_fft) / hop_length + 1;
+    let n_frames = n_frames_total.saturating_sub(1);
+
+    let client = burn_wgpu::WgpuRuntime::client(device);
+    let gpu_out = crate::stft_gpu::compute_stft_power_gpu(
+        &client,
+        &centered,
+        n_fft,
+        hop_length,
+        n_frames_total,
+    );
+
+    // GPU output is frame-major [n_frames_total, n_freqs]; drop last frame and
+    // transpose to [n_freqs, n_frames] to match mel_compress expectation.
+    let ps_tensor: Tensor<WgpuBackend, 2> =
+        Tensor::<WgpuBackend, 1>::from_floats(&gpu_out[..n_frames * n_freqs], device)
+            .reshape([n_frames, n_freqs])
+            .transpose();
+
+    Ok(mel_compress(ps_tensor, n_mels, n_fft, device))
+}
+
+/// Concrete backend type for the bare WGPU path (no Fusion wrapper).
+#[cfg(feature = "cubecl-stft")]
+pub type WgpuBackend = burn_wgpu::CubeBackend<burn_wgpu::WgpuRuntime, f32, i32, u32>;
 
 /// Stack mel spectrograms for multiple audio chunks into a single batch tensor.
 ///
@@ -379,6 +427,26 @@ pub fn batch_mel_spectrograms<B: Backend>(
     let mels: Vec<Tensor<B, 3>> = chunks
         .iter()
         .map(|c| compute_mel_spectrogram(c, n_fft, hop_length, n_mels, device))
+        .collect::<Result<_>>()?;
+    Ok(Tensor::cat(mels, 0))
+}
+
+/// GPU variant of `batch_mel_spectrograms` using the CubeCL STFT kernel.
+///
+/// Requires feature `cubecl-stft` and a bare `WgpuDevice`; each chunk's STFT
+/// runs on GPU while the mel filterbank matmul and normalization also run on GPU.
+#[cfg(feature = "cubecl-stft")]
+pub fn batch_mel_spectrograms_wgpu(
+    chunks: &[AudioData],
+    n_fft: usize,
+    hop_length: usize,
+    n_mels: usize,
+    device: &burn_wgpu::WgpuDevice,
+) -> Result<Tensor<WgpuBackend, 3>> {
+    anyhow::ensure!(!chunks.is_empty(), "batch_mel_spectrograms_wgpu: no chunks");
+    let mels: Vec<Tensor<WgpuBackend, 3>> = chunks
+        .iter()
+        .map(|c| compute_mel_spectrogram_wgpu(c, n_fft, hop_length, n_mels, device))
         .collect::<Result<_>>()?;
     Ok(Tensor::cat(mels, 0))
 }
