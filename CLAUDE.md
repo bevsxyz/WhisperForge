@@ -89,9 +89,13 @@ Phases 1–7 + A–B + B.5 complete. **Current: Phase C (Quantization), then D.*
 - GPU vs CPU DFT correctness test in `stft_gpu.rs`
 - stft_gpu.rs updated for cubecl 0.10 API (`ArrayArg::from_raw_parts` no stride/type-arg, scalars passed directly, launch returns `()`, `read_one_unchecked`)
 
-### Phase C — Quantization ⬜ PLANNED
+### Phase C — Quantization ✅ COMPLETE
 
-FP32 ~150 MB → INT8 ~37 MB. Audit Burn 0.20 `QuantizationScheme`/`Calibration` API; add `--quantize int8` to `whisperforge-convert`; `Precision` enum in `load_whisper`/`load_whisper_from_bytes`.
+INT8 post-training quantization (~4× size reduction: 150 MB → 37 MB).
+- `--quantize int8` flag in `whisperforge-convert` (uses `Module::quantize_weights`)
+- `Precision` enum (Fp32/Int8) in convert pipeline; metadata recorded in `.cfg` sidecar
+- Load path unchanged — recorder transparently handles quantized DType
+- **Known limitation**: NdArray CPU backend has Burn 0.21 quantization bug (unwrap panic). Workaround: offline conversion via GPU backend (Wgpu/Cuda), then load any quantized model in CLI without issues.
 
 ### Phase D — WASM Target ⬜ PLANNED
 
