@@ -37,3 +37,6 @@ Thumbs.db
 
 # RustRover/JetBrains (optional, uncomment if using)
 # .idea/
+
+# Auto-generated repo map (derived artifact)
+CODEINDEX.md

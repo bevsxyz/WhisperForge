@@ -19,8 +19,8 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # Core ML framework
-burn = { version = "0.20.0", features = ["std", "ndarray"] }
-burn-ndarray = "0.20.0"
+burn = { version = "0.21.0", features = ["std", "ndarray"] }
+burn-ndarray = "0.21.0"
 
 # Audio processing
 rubato = "1.0"

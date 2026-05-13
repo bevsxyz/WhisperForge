@@ -30,3 +30,7 @@ for hook in "$HOOKS_SRC"/*; do
 done
 echo "done"
 """
+
+[tasks.demo]
+description="manually test the output"
+run="cargo run -p whisperforge-cli --bin wf -- --audio-file test_data/LJ001-0003.wav --diarize --output-format srt"

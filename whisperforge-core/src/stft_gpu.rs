@@ -148,7 +148,12 @@ mod tests {
 
     /// Compute CPU DFT power spectrum matching the GPU kernel exactly.
     /// Returns flat [n_frames, n_freqs] (frame-major) to match GPU layout.
-    fn cpu_stft_power(samples: &[f32], n_fft: usize, hop_length: usize, n_frames: usize) -> Vec<f32> {
+    fn cpu_stft_power(
+        samples: &[f32],
+        n_fft: usize,
+        hop_length: usize,
+        n_frames: usize,
+    ) -> Vec<f32> {
         let n_freqs = n_fft / 2 + 1;
         let window: Vec<f32> = (0..n_fft)
             .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f32 / n_fft as f32).cos()))
