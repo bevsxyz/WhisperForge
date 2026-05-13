@@ -8,13 +8,22 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use burn::{
-    module::Module,
+    module::{Module, Quantizer},
     record::{FullPrecisionSettings, NamedMpkFileRecorder},
+    tensor::ops::QuantizedTensor,
+    tensor::quantization::{Calibration, QTensorPrimitive, QuantValue},
     tensor::{Tensor, TensorData, backend::Backend},
 };
 use safetensors::SafeTensors;
 
 use whisperforge_core::{Whisper, WhisperConfig};
+
+/// Model quantization precision for conversion
+#[derive(Clone, Copy, Debug)]
+pub enum Precision {
+    Fp32,
+    Int8,
+}
 
 /// Convert an OpenAI Whisper model to Burn format
 ///
@@ -22,10 +31,12 @@ use whisperforge_core::{Whisper, WhisperConfig};
 /// * `input_path` - Path to the OpenAI safetensors file
 /// * `output_path` - Path to save the converted model (without extension)
 /// * `device` - Device to use for conversion
+/// * `precision` - Model precision (FP32 or INT8)
 pub fn convert_openai_to_burn<B: Backend>(
     input_path: &Path,
     output_path: &Path,
     device: &B::Device,
+    precision: Precision,
 ) -> Result<()> {
     // Load safetensors
     let data = std::fs::read(input_path)
@@ -42,16 +53,37 @@ pub fn convert_openai_to_burn<B: Backend>(
     // Load weights from safetensors into model
     let model = load_weights_into_model(model, &tensors, device)?;
 
+    // Apply quantization if requested
+    let model = match precision {
+        Precision::Fp32 => model,
+        Precision::Int8 => {
+            println!("Quantizing model to INT8...");
+            let scheme = <QuantizedTensor<B> as QTensorPrimitive>::default_scheme()
+                .with_value(QuantValue::Q8S);
+            let mut quantizer = Quantizer {
+                calibration: Calibration::MinMax,
+                scheme,
+            };
+            model.quantize_weights(&mut quantizer)
+        }
+    };
+
     // Save in Burn format
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     model
         .save_file(output_path, &recorder)
         .map_err(|e| anyhow::anyhow!("Failed to save model: {:?}", e))?;
 
-    // Save config
+    // Save config with precision info
     let config_path = output_path.with_extension("cfg");
-    let config_json = serde_json::to_string_pretty(&WhisperConfigFile::from(&config))?;
-    std::fs::write(&config_path, config_json)?;
+    let mut config_json: serde_json::Value =
+        serde_json::to_value(&WhisperConfigFile::from(&config))?;
+    let precision_str = match precision {
+        Precision::Fp32 => "fp32",
+        Precision::Int8 => "int8",
+    };
+    config_json["precision"] = serde_json::json!(precision_str);
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
 
     println!("Model saved to {}", output_path.display());
     println!("Config saved to {}", config_path.display());
@@ -718,7 +750,12 @@ mod tests {
 
         let device = NdArrayDevice::default();
 
-        let result = convert_openai_to_burn::<NdArray<f32>>(&input_path, &output_path, &device);
+        let result = convert_openai_to_burn::<NdArray<f32>>(
+            &input_path,
+            &output_path,
+            &device,
+            Precision::Fp32,
+        );
 
         match result {
             Ok(()) => println!("Conversion successful!"),

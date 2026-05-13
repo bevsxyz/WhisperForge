@@ -1,9 +1,16 @@
 use anyhow::{Context, Result};
 use burn::backend::NdArray;
 use burn_ndarray::NdArrayDevice;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use hf_hub::{Repo, RepoType, api::tokio::Api};
-use whisperforge_convert::convert_openai_to_burn;
+use whisperforge_convert::{Precision, convert_openai_to_burn};
+
+#[derive(ValueEnum, Clone, Copy, Default, Debug)]
+enum Quantize {
+    #[default]
+    None,
+    Int8,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -23,6 +30,10 @@ struct Args {
     /// Use a local safetensors file instead of downloading
     #[arg(long)]
     local_safetensors: Option<String>,
+
+    /// Quantization mode
+    #[arg(long, value_enum, default_value_t = Quantize::None)]
+    quantize: Quantize,
 }
 
 type B = NdArray<f32>;
@@ -91,7 +102,12 @@ async fn main() -> Result<()> {
         output_path.display()
     );
 
-    convert_openai_to_burn::<B>(&safetensors_path, output_path, &device)?;
+    let precision = match args.quantize {
+        Quantize::None => Precision::Fp32,
+        Quantize::Int8 => Precision::Int8,
+    };
+
+    convert_openai_to_burn::<B>(&safetensors_path, output_path, &device, precision)?;
 
     println!("Done!");
     Ok(())

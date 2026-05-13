@@ -1,4 +1,4 @@
 pub mod convert;
 pub mod inspect;
 
-pub use convert::convert_openai_to_burn;
+pub use convert::{Precision, convert_openai_to_burn};

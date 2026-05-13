@@ -14,11 +14,21 @@ use std::path::Path;
 
 use crate::model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
 
+/// Model precision for quantization
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelPrecision {
+    Fp32,
+    Int8,
+}
+
 /// Configuration file format for whisper-burn models (.cfg files)
 #[derive(Debug, Clone, Deserialize)]
 pub struct WhisperModelConfig {
     pub audio_encoder_config: AudioEncoderConfigFile,
     pub text_decoder_config: TextDecoderConfigFile,
+    #[serde(default)]
+    pub precision: Option<ModelPrecision>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
