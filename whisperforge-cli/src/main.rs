@@ -486,7 +486,7 @@ fn main() -> Result<()> {
 
     if args.cpu {
         println!("Backend: Flex (CPU)");
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         return run::<Flex<f32>>(args, device, |chunks, dev| {
             batch_mel_spectrograms::<Flex<f32>>(chunks, 400, 160, 80, dev)
         });

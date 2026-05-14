@@ -709,7 +709,7 @@ mod tests {
 
     #[test]
     fn test_model_init() {
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let config = WhisperConfig::tiny_en();
         let model = config.init::<TestBackend>(&device);
 
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn test_encoder_forward() {
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let config = WhisperConfig::tiny_en();
         let model = config.init::<TestBackend>(&device);
 
@@ -735,7 +735,7 @@ mod tests {
 
     #[test]
     fn test_decoder_forward() {
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let config = WhisperConfig::tiny_en();
         let model = config.init::<TestBackend>(&device);
 
@@ -755,7 +755,7 @@ mod tests {
 
     #[test]
     fn test_attention_mask() {
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let mask = attn_decoder_mask::<TestBackend>(4, &device);
 
         assert_eq!(mask.dims(), [4, 4]);

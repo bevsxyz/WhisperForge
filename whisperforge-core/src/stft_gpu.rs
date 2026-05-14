@@ -49,7 +49,7 @@ fn stft_power_kernel<F: Float>(
     // Cooperatively load Hann-windowed samples into shared memory.
     // Each of the n_freqs threads loads ceil(n_fft / n_freqs) samples.
     let mut smem = SharedMemory::<F>::new(n_fft_smem);
-    let two_pi = F::new(6.283185307179586_f32);
+    let two_pi = F::new(std::f32::consts::TAU);
     let n_fft_f = F::cast_from(n_fft);
 
     let mut n = UNIT_POS;

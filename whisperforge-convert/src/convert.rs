@@ -748,7 +748,7 @@ mod tests {
             return;
         }
 
-        let device = FlexDevice::default();
+        let device = FlexDevice;
 
         let result = convert_openai_to_burn::<Flex<f32>>(
             &input_path,

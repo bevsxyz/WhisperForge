@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_embedding_is_unit_norm() {
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let enc: Tensor<Flex<f32>, 3> =
             Tensor::from_data(TensorData::new(vec![1.0f32; 8 * 4], [1, 8, 4]), &device);
         let emb = extract_speaker_embedding(enc).unwrap();
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn test_embedding_dimension_matches_d_model() {
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let d_model = 384usize;
         let enc: Tensor<Flex<f32>, 3> = Tensor::zeros([1, 1500, d_model], &device);
         let emb = extract_speaker_embedding(enc).unwrap();
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_identical_encoder_outputs_produce_identical_embeddings() {
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let data = (0..384).map(|i| i as f32).collect::<Vec<_>>();
         let flat: Vec<f32> = data.iter().cycle().take(1500 * 384).copied().collect();
         let enc: Tensor<Flex<f32>, 3> =

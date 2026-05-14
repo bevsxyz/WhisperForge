@@ -699,7 +699,7 @@ mod tests {
             WHISPER_N_FFT,
             WHISPER_HOP_LENGTH,
             WHISPER_N_MELS,
-            &FlexDevice::default(),
+            &FlexDevice,
         );
 
         assert!(result.is_ok());
@@ -737,7 +737,7 @@ mod tests {
             WHISPER_N_FFT,
             WHISPER_HOP_LENGTH,
             WHISPER_N_MELS,
-            &FlexDevice::default(),
+            &FlexDevice,
         );
 
         assert!(result.is_ok());

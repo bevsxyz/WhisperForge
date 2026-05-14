@@ -41,7 +41,7 @@ type B = Flex<f32>;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let device = FlexDevice::default();
+    let device = FlexDevice;
 
     let output_path = std::path::Path::new(&args.output);
 

@@ -147,7 +147,7 @@ mod tests {
     use burn_flex::FlexDevice;
 
     fn tiny_en_random() -> (crate::model::Whisper<Flex<f32>>, FlexDevice) {
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let config = crate::model::WhisperConfig::tiny_en();
         let model = config.init::<Flex<f32>>(&device);
         (model, device)

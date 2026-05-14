@@ -22,7 +22,7 @@ fn encoder_output_shape(config: &WhisperConfig, device: &FlexDevice) -> [usize; 
 
 #[test]
 fn test_tiny_en_encoder_output_shape() {
-    let device = NdArrayDevice::default();
+    let device = FlexDevice;
     let config = WhisperConfig::tiny_en();
     let out = encoder_output_shape(&config, &device);
     // [batch, n_audio_ctx, n_audio_state] — conv stem halves time from 3000→1500
@@ -32,7 +32,7 @@ fn test_tiny_en_encoder_output_shape() {
 #[test]
 #[ignore = "slow: initialises 6-layer 512-dim base model on NdArray CPU (~5 min)"]
 fn test_base_encoder_output_shape() {
-    let device = NdArrayDevice::default();
+    let device = FlexDevice;
     let config = WhisperConfig::base();
     let out = encoder_output_shape(&config, &device);
     assert_eq!(out, [1, 1500, 512]);
@@ -41,7 +41,7 @@ fn test_base_encoder_output_shape() {
 #[test]
 #[ignore = "slow: initialises 12-layer 768-dim small model on NdArray CPU (~20 min)"]
 fn test_small_encoder_output_shape() {
-    let device = NdArrayDevice::default();
+    let device = FlexDevice;
     let config = WhisperConfig::small();
     let out = encoder_output_shape(&config, &device);
     assert_eq!(out, [1, 1500, 768]);

@@ -161,7 +161,7 @@ mod tests {
         use burn_flex::Flex;
         use burn_flex::FlexDevice;
 
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         // base has n_audio_state=512; tiny_en has 384. The bug hardcoded tiny_en, so a base
         // model would get ln_post with gamma shape [384] instead of [512] and panic on forward.
         let config = WhisperConfig::base();
@@ -215,7 +215,7 @@ mod tests {
             return;
         }
 
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let model = load_whisper::<Flex<f32>>(model_path.to_str().unwrap(), &device);
 
         match model {
@@ -252,7 +252,7 @@ mod tests {
             return Ok(());
         }
 
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let m = load_whisper::<Flex<f32>>(model_path.to_str().unwrap(), &device)?;
         assert_eq!(m.encoder.n_mels, 80);
 
@@ -285,7 +285,7 @@ mod tests {
             return Ok(());
         }
 
-        let device = FlexDevice::default();
+        let device = FlexDevice;
         let m = load_whisper::<Flex<f32>>(model_path.to_str().unwrap(), &device)?;
         assert_eq!(m.encoder.n_mels, 80);
 
