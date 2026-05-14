@@ -76,6 +76,7 @@ Key files in `whisperforge-core/src/`:
 - **Symphonia over hound**: handles format dispatch automatically; hound silently clips integer WAV.
 - **Stale artifacts**: run `cargo clean` before concluding a crate is broken after a toolchain change.
 - **Burn 0.21**: `.squeeze()` takes no arguments; use `NamedMpkFileRecorder::<FullPrecisionSettings>::new()`; `PaddingConfig1d::Explicit` takes two args: `Explicit(left, right)` — symmetric padding is `Explicit(1, 1)` not `Explicit(1)`.
+- **Windows wgpu incompatibility**: wgpu-hal 29.0.3 depends on `windows` 0.61.3 but gpu-allocator 0.28.0 pulls in 0.62.2, causing version conflict on Windows. Fix: use target-specific dependencies in whisperforge-cli to disable wgpu feature on Windows (CPU fallback). TODO: Remove when Burn/wgpu update resolves this.
 
 ## Roadmap
 
