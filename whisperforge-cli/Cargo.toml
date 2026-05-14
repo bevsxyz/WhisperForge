@@ -20,9 +20,9 @@ name = "wf"
 path = "src/main.rs"
 
 [dependencies]
-whisperforge-core = { path = "../whisperforge-core" }
-whisperforge-align = { path = "../whisperforge-align" }
-whisperforge-diarize = { path = "../whisperforge-diarize" }
+whisperforge-core = { path = "../whisperforge-core", version = "0.3" }
+whisperforge-align = { path = "../whisperforge-align", version = "0.3" }
+whisperforge-diarize = { path = "../whisperforge-diarize", version = "0.3" }
 clap = { workspace = true, features = ["derive"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
