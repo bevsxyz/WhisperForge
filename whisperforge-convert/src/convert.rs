@@ -77,7 +77,7 @@ pub fn convert_openai_to_burn<B: Backend>(
     // Save config with precision info
     let config_path = output_path.with_extension("cfg");
     let mut config_json: serde_json::Value =
-        serde_json::to_value(&WhisperConfigFile::from(&config))?;
+        serde_json::to_value(WhisperConfigFile::from(&config))?;
     let precision_str = match precision {
         Precision::Fp32 => "fp32",
         Precision::Int8 => "int8",

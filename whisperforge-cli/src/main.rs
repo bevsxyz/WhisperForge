@@ -506,6 +506,7 @@ fn main() -> Result<()> {
             |chunks, dev| batch_mel_spectrograms_wgpu(chunks, 400, 160, 80, dev),
         );
         #[allow(unreachable_code)]
+        #[allow(clippy::diverging_sub_expression)]
         let _: (WgpuBackend,) = unreachable!(); // suppress unused import
     }
 

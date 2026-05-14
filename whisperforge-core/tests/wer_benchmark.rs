@@ -283,7 +283,7 @@ fn test_wer_benchmark_tiny_en() {
         return;
     }
 
-    let device = FlexDevice::default();
+    let device = FlexDevice;
     let model = load_whisper::<Backend>(model_path.to_str().unwrap(), &device).expect("load model");
     let tokenizer = Tokenizer::from_file(&tokenizer_path).expect("load tokenizer");
 
