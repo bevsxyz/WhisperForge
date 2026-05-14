@@ -56,7 +56,13 @@ jobs:
             ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }} -p whisperforge-cli
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cargo build --release --locked --target ${{ matrix.target }} -p whisperforge-cli --no-default-features
+          else
+            cargo build --release --locked --target ${{ matrix.target }} -p whisperforge-cli
+          fi
+        shell: bash
 
       - name: Strip binaries (Linux / macOS)
         if: matrix.os != 'windows-latest'
