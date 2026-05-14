@@ -7,8 +7,8 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "HuggingFace safetensors to Burn NamedMpk model converter for WhisperForge"
-keywords = ["whisperforge", "whisper", "burn", "huggingface"]
+description = "Convert HuggingFace Whisper safetensors to Burn with INT8 quantization support"
+keywords = ["whisperforge", "whisper", "model-conversion", "quantization", "int8", "huggingface", "safetensors", "burn"]
 categories = ["command-line-utilities", "science"]
 
 [dependencies]

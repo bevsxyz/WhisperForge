@@ -7,8 +7,8 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "VAD segmentation, batched transcription, and SRT output for WhisperForge"
-keywords = ["whisperforge", "whisper", "vad", "srt", "subtitles"]
+description = "Voice activity detection, audio segmentation, and SRT subtitle generation for speech transcription"
+keywords = ["whisperforge", "whisper", "vad", "speech-to-text", "srt", "subtitles", "transcription", "segmentation"]
 categories = ["multimedia::audio"]
 
 [dependencies]

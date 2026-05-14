@@ -7,8 +7,8 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Speaker diarization via embedding clustering for WhisperForge"
-keywords = ["whisperforge", "whisper", "diarization", "speaker"]
+description = "Speaker diarization for speech transcription via embedding clustering"
+keywords = ["whisperforge", "whisper", "diarization", "speaker", "voice", "transcription", "audio", "clustering"]
 categories = ["multimedia::audio"]
 
 [dependencies]

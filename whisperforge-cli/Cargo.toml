@@ -7,8 +7,8 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "GPU-accelerated Whisper transcription CLI (WGPU/CPU, speaker diarization)"
-keywords = ["whisperforge", "whisper", "speech-to-text", "wgpu", "cli"]
+description = "Fast GPU-accelerated speech-to-text CLI with streaming, quantization, speaker diarization, and multilingual support"
+keywords = ["whisperforge", "whisper", "speech-to-text", "transcription", "gpu", "quantization", "streaming", "wgpu", "diarization", "cli"]
 categories = ["command-line-utilities", "multimedia::audio"]
 
 [[bin]]
