@@ -683,8 +683,8 @@ impl From<&WhisperConfig> for WhisperConfigFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::backend::NdArray;
-    use burn_ndarray::NdArrayDevice;
+    use burn_flex::Flex;
+    use burn_flex::FlexDevice;
     use std::path::PathBuf;
 
     fn models_dir() -> PathBuf {
@@ -748,9 +748,9 @@ mod tests {
             return;
         }
 
-        let device = NdArrayDevice::default();
+        let device = FlexDevice::default();
 
-        let result = convert_openai_to_burn::<NdArray<f32>>(
+        let result = convert_openai_to_burn::<Flex<f32>>(
             &input_path,
             &output_path,
             &device,

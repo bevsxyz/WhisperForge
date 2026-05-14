@@ -12,8 +12,8 @@ keywords = ["whisperforge", "whisper", "vad", "srt", "subtitles"]
 categories = ["multimedia::audio"]
 
 [dependencies]
-burn = { workspace = true, features = ["std", "ndarray"] }
-burn-ndarray = { workspace = true }
+burn = { workspace = true, features = ["std", "burn-flex"] }
+burn-flex = { workspace = true }
 earshot = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

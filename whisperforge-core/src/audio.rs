@@ -596,7 +596,7 @@ pub fn pad_or_trim_audio(audio: &AudioData, length_samples: usize) -> AudioData 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn_ndarray::NdArrayDevice;
+    use burn_flex::FlexDevice;
 
     #[test]
     fn test_audio_data_creation() {
@@ -694,12 +694,12 @@ mod tests {
     #[test]
     fn test_mel_spectrogram() {
         let audio = AudioData::new(vec![0.0; 16000], 16000, 1); // 1 second of silence
-        let result = compute_mel_spectrogram::<burn::backend::NdArray>(
+        let result = compute_mel_spectrogram::<burn_flex::Flex<f32>>(
             &audio,
             WHISPER_N_FFT,
             WHISPER_HOP_LENGTH,
             WHISPER_N_MELS,
-            &NdArrayDevice::default(),
+            &FlexDevice::default(),
         );
 
         assert!(result.is_ok());
@@ -732,12 +732,12 @@ mod tests {
             .collect();
 
         let audio = AudioData::new(samples, sample_rate, 1);
-        let result = compute_mel_spectrogram::<burn::backend::NdArray>(
+        let result = compute_mel_spectrogram::<burn_flex::Flex<f32>>(
             &audio,
             WHISPER_N_FFT,
             WHISPER_HOP_LENGTH,
             WHISPER_N_MELS,
-            &NdArrayDevice::default(),
+            &FlexDevice::default(),
         );
 
         assert!(result.is_ok());

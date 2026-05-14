@@ -142,21 +142,21 @@ pub fn forward_decoder_cached<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::backend::NdArray;
     use burn::tensor::{Distribution, Int, TensorData};
-    use burn_ndarray::NdArrayDevice;
+    use burn_flex::Flex;
+    use burn_flex::FlexDevice;
 
-    fn tiny_en_random() -> (crate::model::Whisper<NdArray<f32>>, NdArrayDevice) {
-        let device = NdArrayDevice::default();
+    fn tiny_en_random() -> (crate::model::Whisper<Flex<f32>>, FlexDevice) {
+        let device = FlexDevice::default();
         let config = crate::model::WhisperConfig::tiny_en();
-        let model = config.init::<NdArray<f32>>(&device);
+        let model = config.init::<Flex<f32>>(&device);
         (model, device)
     }
 
     #[test]
     fn test_kv_cache_step_counter() {
         let (model, device) = tiny_en_random();
-        let encoder_out = Tensor::<NdArray<f32>, 3>::zeros([1, 1500, 384], &device);
+        let encoder_out = Tensor::<Flex<f32>, 3>::zeros([1, 1500, 384], &device);
         let mut cache = KvCache::new(&model, encoder_out);
         assert_eq!(cache.step, 0);
         forward_decoder_cached(&model, 50258u32, &mut cache, &device).unwrap();
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn test_kv_cache_logit_shape() {
         let (model, device) = tiny_en_random();
-        let encoder_out = Tensor::<NdArray<f32>, 3>::zeros([1, 1500, 384], &device);
+        let encoder_out = Tensor::<Flex<f32>, 3>::zeros([1, 1500, 384], &device);
         let mut cache = KvCache::new(&model, encoder_out);
         let logits = forward_decoder_cached(&model, 50258u32, &mut cache, &device).unwrap();
         assert_eq!(logits.len(), 51864);
@@ -182,17 +182,14 @@ mod tests {
     #[test]
     fn test_kv_cache_matches_forward_decoder() {
         let (model, device) = tiny_en_random();
-        let encoder_out = Tensor::<NdArray<f32>, 3>::random(
-            [1, 1500, 384],
-            Distribution::Normal(0.0, 0.1),
-            &device,
-        );
+        let encoder_out =
+            Tensor::<Flex<f32>, 3>::random([1, 1500, 384], Distribution::Normal(0.0, 0.1), &device);
 
         // Typical initial context: sot, en, transcribe, no_timestamps
         let init: [u32; 4] = [50258, 50259, 50359, 50363];
 
         // --- Original forward_decoder: full sequence in one call ---
-        let token_tensor: Tensor<NdArray<f32>, 2, Int> = Tensor::from_data(
+        let token_tensor: Tensor<Flex<f32>, 2, Int> = Tensor::from_data(
             TensorData::new(init.iter().map(|&t| t as i32).collect::<Vec<_>>(), [1, 4]),
             &device,
         );

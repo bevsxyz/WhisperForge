@@ -48,14 +48,14 @@ pub fn extract_speaker_embedding<B: Backend>(encoder_output: Tensor<B, 3>) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::backend::NdArray;
     use burn::tensor::TensorData;
-    use burn_ndarray::NdArrayDevice;
+    use burn_flex::Flex;
+    use burn_flex::FlexDevice;
 
     #[test]
     fn test_embedding_is_unit_norm() {
-        let device = NdArrayDevice::default();
-        let enc: Tensor<NdArray<f32>, 3> =
+        let device = FlexDevice::default();
+        let enc: Tensor<Flex<f32>, 3> =
             Tensor::from_data(TensorData::new(vec![1.0f32; 8 * 4], [1, 8, 4]), &device);
         let emb = extract_speaker_embedding(enc).unwrap();
         let norm: f32 = emb.iter().map(|v| v * v).sum::<f32>().sqrt();
@@ -64,21 +64,21 @@ mod tests {
 
     #[test]
     fn test_embedding_dimension_matches_d_model() {
-        let device = NdArrayDevice::default();
+        let device = FlexDevice::default();
         let d_model = 384usize;
-        let enc: Tensor<NdArray<f32>, 3> = Tensor::zeros([1, 1500, d_model], &device);
+        let enc: Tensor<Flex<f32>, 3> = Tensor::zeros([1, 1500, d_model], &device);
         let emb = extract_speaker_embedding(enc).unwrap();
         assert_eq!(emb.len(), d_model);
     }
 
     #[test]
     fn test_identical_encoder_outputs_produce_identical_embeddings() {
-        let device = NdArrayDevice::default();
+        let device = FlexDevice::default();
         let data = (0..384).map(|i| i as f32).collect::<Vec<_>>();
         let flat: Vec<f32> = data.iter().cycle().take(1500 * 384).copied().collect();
-        let enc: Tensor<NdArray<f32>, 3> =
+        let enc: Tensor<Flex<f32>, 3> =
             Tensor::from_data(TensorData::new(flat, [1, 1500, 384]), &device);
-        let enc2: Tensor<NdArray<f32>, 3> = enc.clone();
+        let enc2: Tensor<Flex<f32>, 3> = enc.clone();
         let e1 = extract_speaker_embedding(enc).unwrap();
         let e2 = extract_speaker_embedding(enc2).unwrap();
         let max_diff = e1

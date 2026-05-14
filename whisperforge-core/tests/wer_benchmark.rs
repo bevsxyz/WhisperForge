@@ -6,15 +6,15 @@
 /// Requires models/tiny_en_converted.{mpk,cfg} and models/tokenizer.json.
 /// Audio fixtures are in test_data/ (tracked via git LFS).
 use anyhow::{Context, Result};
-use burn::backend::NdArray;
 use burn::tensor::{Int, Tensor, TensorData};
-use burn_ndarray::NdArrayDevice;
+use burn_flex::Flex;
+use burn_flex::FlexDevice;
 use std::cmp::Ordering;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 use whisperforge_core::{DecodingConfig, HybridDecoder, Whisper, audio, load_whisper};
 
-type Backend = NdArray<f32>;
+type Backend = Flex<f32>;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -90,7 +90,7 @@ fn transcribe(
     model: &Whisper<Backend>,
     tokenizer: &Tokenizer,
     audio_path: &str,
-    device: &NdArrayDevice,
+    device: &FlexDevice,
 ) -> Result<String> {
     let raw =
         audio::load_audio_file(audio_path).with_context(|| format!("loading {audio_path}"))?;
@@ -283,7 +283,7 @@ fn test_wer_benchmark_tiny_en() {
         return;
     }
 
-    let device = NdArrayDevice::default();
+    let device = FlexDevice::default();
     let model = load_whisper::<Backend>(model_path.to_str().unwrap(), &device).expect("load model");
     let tokenizer = Tokenizer::from_file(&tokenizer_path).expect("load tokenizer");
 

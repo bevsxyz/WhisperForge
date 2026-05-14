@@ -12,8 +12,8 @@ keywords = ["whisperforge", "whisper", "speech-to-text", "burn", "ml"]
 categories = ["multimedia::audio", "science"]
 
 [dependencies]
-burn = { workspace = true, features = ["std", "ndarray"] }
-burn-ndarray = { workspace = true }
+burn = { workspace = true, features = ["std", "burn-flex"] }
+burn-flex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

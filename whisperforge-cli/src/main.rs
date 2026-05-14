@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use burn::backend::NdArray;
 use burn::tensor::backend::Backend;
-use burn_ndarray::NdArrayDevice;
+use burn_flex::Flex;
+use burn_flex::FlexDevice;
 use clap::Parser;
 use std::cmp::Ordering;
 use std::io::Write;
@@ -66,7 +66,7 @@ struct Args {
     #[arg(long)]
     vad_threshold: Option<f32>,
 
-    /// Use the CPU (NdArray) backend instead of the default WGPU backend.
+    /// Use the CPU (Flex) backend instead of the default WGPU backend.
     /// Useful on systems without Vulkan/DX12/Metal support.
     #[arg(long)]
     cpu: bool,
@@ -485,10 +485,10 @@ fn main() -> Result<()> {
     println!("Loading model: {}", args.model);
 
     if args.cpu {
-        println!("Backend: NdArray (CPU)");
-        let device = NdArrayDevice::default();
-        return run::<NdArray<f32>>(args, device, |chunks, dev| {
-            batch_mel_spectrograms::<NdArray<f32>>(chunks, 400, 160, 80, dev)
+        println!("Backend: Flex (CPU)");
+        let device = FlexDevice::default();
+        return run::<Flex<f32>>(args, device, |chunks, dev| {
+            batch_mel_spectrograms::<Flex<f32>>(chunks, 400, 160, 80, dev)
         });
     }
 

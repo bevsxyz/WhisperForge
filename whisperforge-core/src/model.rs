@@ -694,10 +694,10 @@ pub fn attn_decoder_mask<B: Backend>(seq_length: usize, device: &B::Device) -> T
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::backend::NdArray;
-    use burn_ndarray::NdArrayDevice;
+    use burn_flex::Flex;
+    use burn_flex::FlexDevice;
 
-    type TestBackend = NdArray<f32>;
+    type TestBackend = Flex<f32>;
 
     #[test]
     fn test_config_creation() {
@@ -709,7 +709,7 @@ mod tests {
 
     #[test]
     fn test_model_init() {
-        let device = NdArrayDevice::default();
+        let device = FlexDevice::default();
         let config = WhisperConfig::tiny_en();
         let model = config.init::<TestBackend>(&device);
 
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn test_encoder_forward() {
-        let device = NdArrayDevice::default();
+        let device = FlexDevice::default();
         let config = WhisperConfig::tiny_en();
         let model = config.init::<TestBackend>(&device);
 
@@ -735,7 +735,7 @@ mod tests {
 
     #[test]
     fn test_decoder_forward() {
-        let device = NdArrayDevice::default();
+        let device = FlexDevice::default();
         let config = WhisperConfig::tiny_en();
         let model = config.init::<TestBackend>(&device);
 
@@ -755,7 +755,7 @@ mod tests {
 
     #[test]
     fn test_attention_mask() {
-        let device = NdArrayDevice::default();
+        let device = FlexDevice::default();
         let mask = attn_decoder_mask::<TestBackend>(4, &device);
 
         assert_eq!(mask.dims(), [4, 4]);

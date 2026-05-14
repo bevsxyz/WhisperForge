@@ -1,9 +1,9 @@
 use anyhow::Result;
-use burn_ndarray::NdArrayDevice;
+use burn_flex::FlexDevice;
 use whisperforge_core::{AudioData, audio};
 
 fn main() -> Result<()> {
-    let device = NdArrayDevice::default();
+    let device = FlexDevice::default();
 
     // Create simple sine wave
     let sample_rate = 16000;

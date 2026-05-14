@@ -1,3 +1,4 @@
+use burn::tensor::Tensor;
 /// Verify that base and small model architectures initialise correctly and
 /// produce the expected output shapes from a synthetic mel spectrogram.
 ///
@@ -7,14 +8,13 @@
 /// being present and run with --ignored (they take several minutes on CPU).
 ///
 /// medium and large-v2 are excluded from CI (too large for automated infra).
-use burn::backend::NdArray;
-use burn::tensor::Tensor;
-use burn_ndarray::NdArrayDevice;
+use burn_flex::Flex;
+use burn_flex::FlexDevice;
 use whisperforge_core::WhisperConfig;
 
-type Backend = NdArray<f32>;
+type Backend = Flex<f32>;
 
-fn encoder_output_shape(config: &WhisperConfig, device: &NdArrayDevice) -> [usize; 3] {
+fn encoder_output_shape(config: &WhisperConfig, device: &FlexDevice) -> [usize; 3] {
     let model = config.init::<Backend>(device);
     let mel = Tensor::<Backend, 3>::zeros([1, 80, 3000], device);
     model.forward_encoder(mel).dims()

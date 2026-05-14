@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use burn::backend::NdArray;
-use burn_ndarray::NdArrayDevice;
+use burn_flex::Flex;
+use burn_flex::FlexDevice;
 use clap::{Parser, ValueEnum};
 use hf_hub::{Repo, RepoType, api::tokio::Api};
 use whisperforge_convert::{Precision, convert_openai_to_burn};
@@ -36,12 +36,12 @@ struct Args {
     quantize: Quantize,
 }
 
-type B = NdArray<f32>;
+type B = Flex<f32>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let device = NdArrayDevice::default();
+    let device = FlexDevice::default();
 
     let output_path = std::path::Path::new(&args.output);
 

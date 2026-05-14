@@ -13,8 +13,8 @@ categories = ["command-line-utilities", "science"]
 
 [dependencies]
 whisperforge-core = { path = "../whisperforge-core", version = "0.2.0" }
-burn = { workspace = true, features = ["std", "train"] }
-burn-ndarray = { workspace = true }
+burn = { workspace = true, features = ["std", "train", "burn-flex"] }
+burn-flex = { workspace = true }
 candle-core = "0.9.1"
 safetensors = "0.4.2"
 hf-hub = { version = "0.3.2", features = ["tokio"] }

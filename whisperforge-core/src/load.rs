@@ -158,10 +158,10 @@ mod tests {
     #[test]
     #[ignore = "slow: initialises base model (6-layer 512-dim) on NdArray CPU (~10 min)"]
     fn test_layer_norm_dims_match_loaded_config() {
-        use burn::backend::NdArray;
-        use burn_ndarray::NdArrayDevice;
+        use burn_flex::Flex;
+        use burn_flex::FlexDevice;
 
-        let device = NdArrayDevice::default();
+        let device = FlexDevice::default();
         // base has n_audio_state=512; tiny_en has 384. The bug hardcoded tiny_en, so a base
         // model would get ln_post with gamma shape [384] instead of [512] and panic on forward.
         let config = WhisperConfig::base();
@@ -171,13 +171,13 @@ mod tests {
             "test precondition: base and tiny_en must have different state dims"
         );
 
-        let mut model = config.init::<NdArray<f32>>(&device);
-        let fresh = config.init::<NdArray<f32>>(&device);
+        let mut model = config.init::<Flex<f32>>(&device);
+        let fresh = config.init::<Flex<f32>>(&device);
         model.decoder.ln = fresh.decoder.ln;
         model.encoder.ln_post = fresh.encoder.ln_post;
 
         // Encoder forward would panic if ln_post had wrong dims (384 vs expected 512).
-        let mel = burn::tensor::Tensor::<NdArray<f32>, 3>::zeros([1, 80, 3000], &device);
+        let mel = burn::tensor::Tensor::<Flex<f32>, 3>::zeros([1, 80, 3000], &device);
         let out = model.forward_encoder(mel);
         assert_eq!(out.dims(), [1, 1500, 512]);
     }
@@ -202,8 +202,8 @@ mod tests {
 
     #[test]
     fn test_load_whisper_model() {
-        use burn::backend::NdArray;
-        use burn_ndarray::NdArrayDevice;
+        use burn_flex::Flex;
+        use burn_flex::FlexDevice;
 
         // Use converted model (Burn 0.20 format)
         let model_path = models_dir().join("tiny_en_converted");
@@ -215,8 +215,8 @@ mod tests {
             return;
         }
 
-        let device = NdArrayDevice::default();
-        let model = load_whisper::<NdArray<f32>>(model_path.to_str().unwrap(), &device);
+        let device = FlexDevice::default();
+        let model = load_whisper::<Flex<f32>>(model_path.to_str().unwrap(), &device);
 
         match model {
             Ok(m) => {
@@ -240,8 +240,8 @@ mod tests {
     #[test]
     #[ignore = "requires models/base_converted.{mpk,cfg} — git-ignored; convert from HuggingFace first"]
     fn test_load_base_model_and_encoder_forward() -> Result<()> {
-        use burn::backend::NdArray;
-        use burn_ndarray::NdArrayDevice;
+        use burn_flex::Flex;
+        use burn_flex::FlexDevice;
 
         let model_path = models_dir().join("base_converted");
         if !model_path.with_extension("mpk").exists() {
@@ -252,11 +252,11 @@ mod tests {
             return Ok(());
         }
 
-        let device = NdArrayDevice::default();
-        let m = load_whisper::<NdArray<f32>>(model_path.to_str().unwrap(), &device)?;
+        let device = FlexDevice::default();
+        let m = load_whisper::<Flex<f32>>(model_path.to_str().unwrap(), &device)?;
         assert_eq!(m.encoder.n_mels, 80);
 
-        let mel = burn::tensor::Tensor::<NdArray<f32>, 3>::zeros([1, 80, 3000], &device);
+        let mel = burn::tensor::Tensor::<Flex<f32>, 3>::zeros([1, 80, 3000], &device);
         let out = m.forward_encoder(mel);
         // base: n_audio_ctx=1500, n_audio_state=512
         assert_eq!(out.dims(), [1, 1500, 512]);
@@ -273,8 +273,8 @@ mod tests {
     #[test]
     #[ignore = "requires models/small_converted.{mpk,cfg} — git-ignored; convert from HuggingFace first"]
     fn test_load_small_model_and_encoder_forward() -> Result<()> {
-        use burn::backend::NdArray;
-        use burn_ndarray::NdArrayDevice;
+        use burn_flex::Flex;
+        use burn_flex::FlexDevice;
 
         let model_path = models_dir().join("small_converted");
         if !model_path.with_extension("mpk").exists() {
@@ -285,11 +285,11 @@ mod tests {
             return Ok(());
         }
 
-        let device = NdArrayDevice::default();
-        let m = load_whisper::<NdArray<f32>>(model_path.to_str().unwrap(), &device)?;
+        let device = FlexDevice::default();
+        let m = load_whisper::<Flex<f32>>(model_path.to_str().unwrap(), &device)?;
         assert_eq!(m.encoder.n_mels, 80);
 
-        let mel = burn::tensor::Tensor::<NdArray<f32>, 3>::zeros([1, 80, 3000], &device);
+        let mel = burn::tensor::Tensor::<Flex<f32>, 3>::zeros([1, 80, 3000], &device);
         let out = m.forward_encoder(mel);
         // small: n_audio_ctx=1500, n_audio_state=768
         assert_eq!(out.dims(), [1, 1500, 768]);
