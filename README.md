@@ -62,9 +62,9 @@ For Rust projects, add WhisperForge crates to `Cargo.toml`:
 
 ```toml
 [dependencies]
-whisperforge-core = "0.2"        # Core: Whisper model & audio pipeline
-whisperforge-align = "0.2"       # Optional: VAD, batched transcription, SRT
-whisperforge-diarize = "0.2"     # Optional: Speaker diarization
+whisperforge-core = "0.3"        # Core: Whisper model & audio pipeline
+whisperforge-align = "0.3"       # Optional: VAD, batched transcription, SRT
+whisperforge-diarize = "0.3"     # Optional: Speaker diarization
 
 [features]
 gpu = ["whisperforge-core/cubecl-stft"]  # Optional: GPU via WGPU
@@ -207,7 +207,7 @@ Five-crate workspace built on **Burn 0.21** (Rust 2024 edition, requires **Rust 
 ## Tech Stack
 
 - **[Burn 0.21](https://burn.dev/)** — GPU-accelerated ML inference framework
-  - NdArray backend for CPU inference
+  - burn-flex backend: CPU (NdArray/Std) with automatic GPU dispatch
   - WGPU backend for Vulkan/DX12/Metal GPU acceleration
 - **[rubato](https://github.com/HeroicKatora/rubato)** — high-quality audio resampling
 - **[symphonia](https://github.com/pdeljanov/symphonia)** — multi-format audio decoding
