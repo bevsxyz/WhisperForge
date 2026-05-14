@@ -62,9 +62,9 @@ For Rust projects, add WhisperForge crates to `Cargo.toml`:
 
 ```toml
 [dependencies]
-whisperforge-core = "0.3"        # Core: Whisper model & audio pipeline
-whisperforge-align = "0.3"       # Optional: VAD, batched transcription, SRT
-whisperforge-diarize = "0.3"     # Optional: Speaker diarization
+whisperforge-core = "0.3.1"        # Core: Whisper model & audio pipeline
+whisperforge-align = "0.3.1"       # Optional: VAD, batched transcription, SRT
+whisperforge-diarize = "0.3.1"     # Optional: Speaker diarization
 
 [features]
 gpu = ["whisperforge-core/cubecl-stft"]  # Optional: GPU via WGPU

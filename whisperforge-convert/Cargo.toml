@@ -10,6 +10,7 @@ rust-version.workspace = true
 description = "Convert HuggingFace Whisper safetensors to Burn with INT8 quantization support"
 keywords = ["whisperforge", "whisper", "model-conversion", "quantization", "int8", "huggingface", "safetensors", "burn"]
 categories = ["command-line-utilities", "science"]
+readme = "README.md"
 
 [dependencies]
 whisperforge-core = { path = "../whisperforge-core", version = "0.3" }

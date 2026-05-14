@@ -10,6 +10,7 @@ rust-version.workspace = true
 description = "Fast GPU-accelerated speech-to-text CLI with streaming, quantization, speaker diarization, and multilingual support"
 keywords = ["whisperforge", "whisper", "speech-to-text", "transcription", "gpu", "quantization", "streaming", "wgpu", "diarization", "cli"]
 categories = ["command-line-utilities", "multimedia::audio"]
+readme = "README.md"
 
 [[bin]]
 name = "whisperforge"

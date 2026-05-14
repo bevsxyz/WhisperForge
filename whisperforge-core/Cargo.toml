@@ -10,6 +10,7 @@ rust-version.workspace = true
 description = "GPU-accelerated Whisper model inference with streaming audio, quantization, and KV-cached decoding"
 keywords = ["whisperforge", "whisper", "speech-to-text", "gpu", "quantization", "streaming", "int8", "burn", "ml"]
 categories = ["multimedia::audio", "science"]
+readme = "README.md"
 
 [dependencies]
 burn = { workspace = true, features = ["std", "burn-flex"] }
