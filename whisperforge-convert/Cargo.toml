@@ -12,7 +12,7 @@ keywords = ["whisperforge", "whisper", "burn", "huggingface"]
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-whisperforge-core = { path = "../whisperforge-core", version = "0.2.0" }
+whisperforge-core = { path = "../whisperforge-core" }
 burn = { workspace = true, features = ["std", "train", "burn-flex"] }
 burn-flex = { workspace = true }
 candle-core = "0.9.1"
