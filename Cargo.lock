@@ -8140,7 +8140,7 @@ dependencies = [
 
 [[package]]
 name = "whisperforge-align"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "burn",
@@ -8155,7 +8155,7 @@ dependencies = [
 
 [[package]]
 name = "whisperforge-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "burn",
@@ -8172,7 +8172,7 @@ dependencies = [
 
 [[package]]
 name = "whisperforge-convert"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "burn",
@@ -8190,7 +8190,7 @@ dependencies = [
 
 [[package]]
 name = "whisperforge-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "audioadapter-buffers",
@@ -8210,7 +8210,7 @@ dependencies = [
 
 [[package]]
 name = "whisperforge-diarize"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
 ]

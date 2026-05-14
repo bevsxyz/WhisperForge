@@ -8,7 +8,7 @@ homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "Speaker diarization for speech transcription via embedding clustering"
-keywords = ["whisperforge", "whisper", "diarization", "speaker", "voice", "transcription", "audio", "clustering"]
+keywords = ["whisper", "diarization", "speaker", "voice", "transcription"]
 categories = ["multimedia::audio"]
 readme = "README.md"
 

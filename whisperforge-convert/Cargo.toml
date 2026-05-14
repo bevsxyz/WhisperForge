@@ -8,7 +8,7 @@ homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "Convert HuggingFace Whisper safetensors to Burn with INT8 quantization support"
-keywords = ["whisperforge", "whisper", "model-conversion", "quantization", "int8", "huggingface", "safetensors", "burn"]
+keywords = ["whisper", "model-conversion", "quantization", "huggingface", "safetensors"]
 categories = ["command-line-utilities", "science"]
 readme = "README.md"
 

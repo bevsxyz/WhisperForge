@@ -8,7 +8,7 @@ homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "GPU-accelerated Whisper model inference with streaming audio, quantization, and KV-cached decoding"
-keywords = ["whisperforge", "whisper", "speech-to-text", "gpu", "quantization", "streaming", "int8", "burn", "ml"]
+keywords = ["whisper", "speech-to-text", "gpu", "quantization", "burn"]
 categories = ["multimedia::audio", "science"]
 readme = "README.md"
 
