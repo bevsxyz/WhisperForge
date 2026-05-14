@@ -1,6 +1,13 @@
 # WhisperForge
 
-A Rust implementation of GPU-accelerated Whisper transcription using [Burn 0.20](https://burn.dev/), with WGPU backend (Vulkan/DX12/Metal), word-level timestamps, and speaker diarization.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![Burn 0.21](https://img.shields.io/badge/burn-0.21-blueviolet.svg)](https://burn.dev/)
+[![GitHub release](https://img.shields.io/github/v/release/bevsxyz/WhisperForge?label=version)](https://github.com/bevsxyz/WhisperForge/releases)
+
+A high-performance Rust implementation of OpenAI's Whisper speech-to-text model with GPU acceleration via WGPU (Vulkan/DX12/Metal). Features SOTA decoding algorithms, per-token timestamps, and speaker diarization.
+
+[📖 Documentation](#architecture) · [🚀 Quick Start](#quick-start) · [💬 Model Files](#model-files) · [🔧 CLI Reference](#cli-reference)
 
 ## Features
 
@@ -12,23 +19,22 @@ A Rust implementation of GPU-accelerated Whisper transcription using [Burn 0.20]
 - Voice activity detection — silence segments skipped automatically
 - Two binary aliases: `whisperforge` and `wf`
 
-## Current Status
+## Project Status
 
-All 7 feature phases complete.
+✅ **Production Ready** — All core features complete (Phases A–C).
 
 | Component | Status |
-|-----------|--------|
-| Whisper model (all sizes, tiny.en → large-v2) | Complete |
-| Audio pipeline (mel spectrogram, resampling, VAD) | Complete |
-| SOTA decoder (HybridDecoder, beam search, temperature fallback) | Complete |
-| KV-cache O(n) decoder | Complete |
-| Batched encoder (all chunks in one forward pass) | Complete |
-| Model loader + converter (HuggingFace → Burn NamedMpk) | Complete |
-| Per-token timestamps (cross-attention peaks) | Complete |
-| SRT / JSON / text output | Complete |
-| WGPU GPU backend | Complete |
-| Speaker diarization Option A (encoder mean-pool embeddings) | Complete |
-| Speaker diarization Option B (ResNet293) | Deferred — pending Burn 0.21 |
+|---|---|
+| Whisper model loader (all sizes: tiny.en → large-v3) | ✅ Complete |
+| Audio pipeline (mel spectrogram, resampling, VAD) | ✅ Complete |
+| SOTA HybridDecoder (beam search + temperature fallback) | ✅ Complete |
+| KV-cache O(n) decoder | ✅ Complete |
+| Per-token timestamps (cross-attention) | ✅ Complete |
+| SRT / JSON / text output | ✅ Complete |
+| GPU acceleration (WGPU: Vulkan/DX12/Metal) | ✅ Complete |
+| Speaker diarization (encoder embeddings) | ✅ Complete |
+| INT8 quantization (~4× compression) | ✅ Complete |
+| WASM target (browser support) | ⬜ Planned (Phase D) |
 
 ## Quick Start
 
@@ -98,7 +104,7 @@ Options:
 
 ## Architecture
 
-Five-crate workspace built on Burn 0.20 (Rust 2024 edition, requires Rust 1.85+):
+Five-crate workspace built on **Burn 0.21** (Rust 2024 edition, requires **Rust 1.85+**):
 
 | Crate | Role |
 |-------|------|
@@ -110,14 +116,25 @@ Five-crate workspace built on Burn 0.20 (Rust 2024 edition, requires Rust 1.85+)
 
 ## Tech Stack
 
-- **[Burn 0.20](https://burn.dev/)** — ML framework (NdArray CPU; WGPU via `--wgpu`)
-- **rubato** — audio resampling
-- **hound** — WAV I/O
-- **tokenizers** — BPE tokenization
-- **earshot** — voice activity detection
-- **flate2** — compression ratio quality gate
-- **hf-hub** — HuggingFace model download (converter only)
+- **[Burn 0.21](https://burn.dev/)** — GPU-accelerated ML inference framework
+  - NdArray backend for CPU inference
+  - WGPU backend for Vulkan/DX12/Metal GPU acceleration
+- **[rubato](https://github.com/HeroicKatora/rubato)** — high-quality audio resampling
+- **[symphonia](https://github.com/pdeljanov/symphonia)** — multi-format audio decoding
+- **[tokenizers](https://huggingface.co/docs/tokenizers/)** — BPE tokenization
+- **[earshot](https://github.com/tazz4843/earshot-rs)** — voice activity detection
+- **[flate2](https://github.com/rust-lang/flate2-rs)** — compression utilities
+- **[hf-hub](https://github.com/huggingface/hf-hub)** — HuggingFace model hub integration
+
+## Resources
+
+- 📚 [Whisper Paper](https://arxiv.org/abs/2212.04356) — OpenAI's original research
+- 🔗 [HuggingFace Models](https://huggingface.co/openai) — Pre-trained model weights
+- 📘 [Burn Documentation](https://burn.dev/) — ML framework reference
+- 🐛 [Issues](https://github.com/bevsxyz/WhisperForge/issues) — Bug reports & feature requests
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+This project is licensed under the **MIT License** — see [LICENSE](LICENSE) for details.
+
+Made with ❤️ by [bevsxyz](https://github.com/bevsxyz)

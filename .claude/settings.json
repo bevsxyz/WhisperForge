@@ -1,4 +1,7 @@
 {
+  "env": {
+    "CODEINDEX_PATH": "CODEINDEX.md"
+  },
   "permissions": {
     "allow": [
       "Bash(cargo check *)",
@@ -20,6 +23,17 @@
   },
   "includeCoAuthoredBy": false,
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f CODEINDEX.md ] && cat CODEINDEX.md | jq -Rs '{hookSpecificOutput: {hookEventName: \"SessionStart\", additionalContext: .}}' || echo '{}'"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Edit|Write",
