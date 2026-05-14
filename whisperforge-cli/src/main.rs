@@ -492,30 +492,42 @@ fn main() -> Result<()> {
         });
     }
 
-    use burn::backend::wgpu::WgpuDevice;
-    let device = WgpuDevice::default();
-
-    #[cfg(feature = "cubecl-stft")]
+    #[cfg(feature = "gpu")]
     {
-        use burn_wgpu::CubeBackend;
-        use whisperforge_core::audio::{WgpuBackend, batch_mel_spectrograms_wgpu};
-        println!("Backend: WGPU (GPU, CubeCL STFT)");
-        return run::<CubeBackend<burn_wgpu::WgpuRuntime, f32, i32, u32>>(
-            args,
-            device,
-            |chunks, dev| batch_mel_spectrograms_wgpu(chunks, 400, 160, 80, dev),
-        );
-        #[allow(unreachable_code)]
-        #[allow(clippy::diverging_sub_expression)]
-        let _: (WgpuBackend,) = unreachable!(); // suppress unused import
+        use burn::backend::wgpu::WgpuDevice;
+        let device = WgpuDevice::default();
+
+        #[cfg(feature = "cubecl-stft")]
+        {
+            use burn_wgpu::CubeBackend;
+            use whisperforge_core::audio::{WgpuBackend, batch_mel_spectrograms_wgpu};
+            println!("Backend: WGPU (GPU, CubeCL STFT)");
+            return run::<CubeBackend<burn_wgpu::WgpuRuntime, f32, i32, u32>>(
+                args,
+                device,
+                |chunks, dev| batch_mel_spectrograms_wgpu(chunks, 400, 160, 80, dev),
+            );
+            #[allow(unreachable_code)]
+            #[allow(clippy::diverging_sub_expression)]
+            let _: (WgpuBackend,) = unreachable!(); // suppress unused import
+        }
+
+        #[cfg(not(feature = "cubecl-stft"))]
+        {
+            use burn::backend::Wgpu;
+            println!("Backend: WGPU (GPU)");
+            return run::<Wgpu>(args, device, |chunks, dev| {
+                batch_mel_spectrograms::<Wgpu>(chunks, 400, 160, 80, dev)
+            });
+        }
     }
 
-    #[cfg(not(feature = "cubecl-stft"))]
+    #[cfg(not(feature = "gpu"))]
     {
-        use burn::backend::Wgpu;
-        println!("Backend: WGPU (GPU)");
-        run::<Wgpu>(args, device, |chunks, dev| {
-            batch_mel_spectrograms::<Wgpu>(chunks, 400, 160, 80, dev)
+        println!("Backend: Flex (CPU) - GPU not available");
+        let device = FlexDevice;
+        run::<Flex<f32>>(args, device, |chunks, dev| {
+            batch_mel_spectrograms::<Flex<f32>>(chunks, 400, 160, 80, dev)
         })
     }
 }
