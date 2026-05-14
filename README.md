@@ -5,6 +5,10 @@
 [![Burn 0.21](https://img.shields.io/badge/burn-0.21-blueviolet.svg)](https://burn.dev/)
 [![GitHub release](https://img.shields.io/github/v/release/bevsxyz/WhisperForge?label=version)](https://github.com/bevsxyz/WhisperForge/releases)
 
+[![whisperforge-core on crates.io](https://img.shields.io/crates/v/whisperforge-core.svg)](https://crates.io/crates/whisperforge-core)
+[![whisperforge-cli on crates.io](https://img.shields.io/crates/v/whisperforge-cli.svg)](https://crates.io/crates/whisperforge-cli)
+[![whisperforge-align on crates.io](https://img.shields.io/crates/v/whisperforge-align.svg)](https://crates.io/crates/whisperforge-align)
+
 A high-performance Rust implementation of OpenAI's Whisper speech-to-text model with GPU acceleration via WGPU (Vulkan/DX12/Metal). Features SOTA decoding algorithms, per-token timestamps, and speaker diarization.
 
 [📖 Documentation](#architecture) · [🚀 Quick Start](#quick-start) · [💬 Model Files](#model-files) · [🔧 CLI Reference](#cli-reference)
@@ -36,7 +40,73 @@ A high-performance Rust implementation of OpenAI's Whisper speech-to-text model 
 | INT8 quantization (~4× compression) | ✅ Complete |
 | WASM target (browser support) | ⬜ Planned (Phase D) |
 
+## Installation
+
+### CLI Binary
+
+**[📦 Install from crates.io](https://crates.io/crates/whisperforge-cli)** — One command:
+```bash
+cargo install whisperforge-cli
+wf --help
+```
+
+**[🔨 Build from source](https://github.com/bevsxyz/WhisperForge)** — For development:
+```bash
+git clone https://github.com/bevsxyz/WhisperForge
+cargo install --path ./whisperforge-cli
+```
+
+### Library: Add to Your Project
+
+For Rust projects, add WhisperForge crates to `Cargo.toml`:
+
+```toml
+[dependencies]
+whisperforge-core = "0.2"        # Core: Whisper model & audio pipeline
+whisperforge-align = "0.2"       # Optional: VAD, batched transcription, SRT
+whisperforge-diarize = "0.2"     # Optional: Speaker diarization
+
+[features]
+gpu = ["whisperforge-core/cubecl-stft"]  # Optional: GPU via WGPU
+```
+
+Basic example:
+```rust
+use whisperforge_core::{Model, WhisperConfig};
+use std::path::Path;
+
+let config = WhisperConfig::new("tiny.en");
+let model = Model::load(Path::new("models/tiny_en_converted"))?;
+let transcript = model.transcribe(audio_samples, sample_rate)?;
+println!("{}", transcript);
+```
+
 ## Quick Start
+
+### Using the CLI
+
+After [installing](#installation), download a model and transcribe audio:
+
+```bash
+# Convert a Whisper model from HuggingFace
+cargo run --release -p whisperforge-convert -- \
+  --model-id openai/whisper-tiny.en \
+  --output models/tiny_en_converted
+
+# Transcribe (CPU)
+wf -a audio.wav -m tiny_en_converted
+
+# GPU (Vulkan/DX12/Metal)
+wf -a audio.wav -m tiny_en_converted --wgpu
+
+# SRT with speaker labels
+wf -a audio.wav -m tiny_en_converted --output-format srt --diarize -o output.srt
+
+# JSON output
+wf -a audio.wav --output-format json
+```
+
+### For Contributors
 
 ```bash
 # Check compilation
@@ -47,38 +117,52 @@ cargo test --release -p whisperforge-core -p whisperforge-convert -p whisperforg
 
 # Format + lint
 cargo fmt --all && cargo clippy --all-targets --all-features
-
-# Transcribe WAV, MP3, FLAC, OGG, M4A (CPU)
-wf -a audio.mp3 -m tiny_en_converted
-wf -a audio.flac -m tiny_en_converted
-
-# Transcribe (GPU — Vulkan/DX12/Metal)
-wf -a audio.wav -m tiny_en_converted --wgpu
-
-# SRT output with speaker labels
-wf -a audio.wav -m tiny_en_converted --output-format srt --diarize -o output.srt
-
-# JSON output
-wf -a audio.wav --output-format json
 ```
 
 ## Model Files
 
-Models are git-ignored. Download from HuggingFace and convert with `whisperforge-convert`:
+Model weights are git-ignored. Convert from HuggingFace using `whisperforge-convert`:
 
 ```bash
-cargo run --release -p whisperforge-convert -- --model openai/whisper-tiny.en --output models/tiny_en_converted
+# Basic: download and convert to Burn format
+cargo run --release -p whisperforge-convert -- \
+  --model-id openai/whisper-tiny.en \
+  --output models/tiny_en_converted
+
+# Quantized: INT8 compression (37 MB vs 150 MB for tiny.en)
+cargo run --release -p whisperforge-convert -- \
+  --model-id openai/whisper-tiny.en \
+  --output models/tiny_en_quantized \
+  --quantize int8
+
+# From local file instead of downloading
+cargo run --release -p whisperforge-convert -- \
+  --local-safetensors /path/to/model.safetensors \
+  --output models/tiny_en_converted
 ```
 
-Required files per model:
+**Converter options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model-id` | `openai/whisper-tiny.en` | HuggingFace model identifier |
+| `--output` | required | Output path without extension (generates `.mpk` + `.cfg`) |
+| `--quantize` | `none` | Quantization: `none` (FP32) or `int8` (~4× compression) |
+| `--local-safetensors` | — | Load from local safetensors file instead of downloading |
+
+**Generated files:**
 ```
 models/
-├── tiny_en_converted.mpk   # Burn NamedMpk weights
-├── tiny_en_converted.cfg   # JSON config (auto-generated by converter)
+├── <model_name>.mpk        # Burn model weights
+├── <model_name>.cfg        # Metadata (precision, config)
 └── tokenizer.json          # BPE tokenizer (shared across models)
 ```
 
+Both the CLI and library load models from `models/`. When embedding the library, provide your model directory path at runtime.
+
 ## CLI Reference
+
+`whisperforge` / `wf` — GPU-accelerated Whisper transcription from the command line.
 
 ```
 wf [OPTIONS]
@@ -102,17 +186,23 @@ Options:
       --diarize-threshold <F>      Cosine similarity threshold [default: 0.7]
 ```
 
+**Available models:**
+- `tiny.en` — English-only, 39M parameters
+- `base`, `small`, `medium`, `large-v2`, `large-v3` — Multilingual
+
+All models are converted from OpenAI's [HuggingFace releases](https://huggingface.co/openai) via `whisperforge-convert`.
+
 ## Architecture
 
-Five-crate workspace built on **Burn 0.21** (Rust 2024 edition, requires **Rust 1.85+**):
+Five-crate workspace built on **Burn 0.21** (Rust 2024 edition, requires **Rust 1.85+**). All crates published on [crates.io](https://crates.io/):
 
 | Crate | Role |
 |-------|------|
-| `whisperforge-core` | Whisper model, audio pipeline, KV-cached decoding |
-| `whisperforge-cli` | `whisperforge` / `wf` binary |
-| `whisperforge-convert` | HuggingFace safetensors → Burn NamedMpk conversion |
-| `whisperforge-align` | VAD, segmentation, `BatchedTranscriber`, SRT output |
-| `whisperforge-diarize` | Speaker embedding clustering, `SPEAKER_NN` label assignment |
+| [`whisperforge-core`](https://crates.io/crates/whisperforge-core) | Whisper model, audio pipeline, KV-cached decoding |
+| [`whisperforge-cli`](https://crates.io/crates/whisperforge-cli) | `whisperforge` / `wf` binary |
+| [`whisperforge-convert`](https://crates.io/crates/whisperforge-convert) | HuggingFace safetensors → Burn NamedMpk conversion |
+| [`whisperforge-align`](https://crates.io/crates/whisperforge-align) | VAD, segmentation, `BatchedTranscriber`, SRT output |
+| [`whisperforge-diarize`](https://crates.io/crates/whisperforge-diarize) | Speaker embedding clustering, `SPEAKER_NN` label assignment |
 
 ## Tech Stack
 
