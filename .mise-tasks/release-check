@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# mise description="Pre-release gate: compile all variants, smoke test error paths — run before tagging"
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# ── 1. Compile ────────────────────────────────────────────────────────────────
+echo "=== [1/2] Compile"
+
+# Default (GPU) variant — mirrors what Linux/macOS release build uses
+cargo build --release -p whisperforge-cli --features gpu
+
+# CPU-only variant — mirrors Windows release build; catches --no-default-features regressions
+cargo build --release -p whisperforge-cli --no-default-features
+
+# Convert binary
+cargo build --release -p whisperforge-convert
+
+# ── 2. Smoke tests ────────────────────────────────────────────────────────────
+echo "=== [2/2] Smoke tests"
+BIN="./target/release/whisperforge"
+CONV="./target/release/whisperforge-convert"
+
+"$BIN" --help > /dev/null
+
+CARGO_VER=$(grep '^version' Cargo.toml | head -1 | grep -oP '"\K[^"]+')
+BIN_VER=$("$BIN" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
+[[ "$CARGO_VER" == "$BIN_VER" ]] || {
+    echo "FAIL: version mismatch — Cargo.toml=$CARGO_VER binary=$BIN_VER"
+    exit 1
+}
+
+# Missing audio → must exit nonzero
+"$BIN" -a /no_such_audio_file_9999.wav -m tiny_en_converted && {
+    echo "FAIL: missing audio was accepted (expected nonzero exit)"
+    exit 1
+} || true
+
+# --task translate → must exit nonzero (not implemented)
+"$BIN" -a /dev/null -m no_model --task translate && {
+    echo "FAIL: --task translate was accepted (expected nonzero exit)"
+    exit 1
+} || true
+
+"$CONV" --help > /dev/null
+
+echo ""
+echo "=== Release check PASSED ==="

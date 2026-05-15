@@ -481,6 +481,10 @@ fn run<B: Backend>(
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    if args.task != "transcribe" {
+        anyhow::bail!("Only 'transcribe' is supported. Translation is not yet implemented.");
+    }
+
     println!("WhisperForge v{}", env!("CARGO_PKG_VERSION"));
     println!("Loading model: {}", args.model);
 

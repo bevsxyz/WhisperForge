@@ -1,0 +1,2 @@
+#!/bin/sh
+mise run commit-msg -- "$1"

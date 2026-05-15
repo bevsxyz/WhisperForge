@@ -1,6 +1,8 @@
 [tools]
 python = "latest"
 uv = "latest"
+"aqua:git-cliff" = "latest"
+"cargo:cargo-release" = "latest"
 
 [tasks.pre-commit]
 description = "Pre-commit checks: fmt"

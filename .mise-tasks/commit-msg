@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# mise description="Validate conventional commit message format — hard block on failure"
+set -euo pipefail
+
+COMMIT_MSG_FILE="${1:-}"
+[[ -n "$COMMIT_MSG_FILE" ]] || { echo "Usage: mise run commit-msg -- <commit-msg-file>"; exit 1; }
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+# Allow merge commits and fixup commits unchanged
+echo "$COMMIT_MSG" | grep -qE "^(Merge |fixup! )" && exit 0
+
+PATTERN="^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\(.+\))?(!)?: .{1,}"
+if ! echo "$COMMIT_MSG" | grep -qE "$PATTERN"; then
+    echo "ERROR: Commit message does not follow conventional commits format."
+    echo "  Expected: type(scope)?: description"
+    echo "  Types:    feat fix docs style refactor perf test chore ci build revert"
+    echo ""
+    echo "  Your message: $COMMIT_MSG"
+    exit 1
+fi

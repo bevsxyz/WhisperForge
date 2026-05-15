@@ -110,10 +110,13 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
+      - name: Extract release notes
+        run: awk '/^## \[/{if(found){exit} found=1} found{print}' CHANGELOG.md > /tmp/release-notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: WhisperForge ${{ github.ref_name }}
-          body_path: CHANGELOG.md
+          body_path: /tmp/release-notes.md
           files: artifacts/*
           fail_on_unmatched_files: true

@@ -20,9 +20,34 @@ cargo fmt --all && cargo clippy --all-targets --all-features
 # Git hooks — run once after cloning
 mise run setup
 
+# Release (bumps version, generates CHANGELOG via git-cliff, tags, pushes)
+cargo release patch   # or minor / major
+
 # Run the CLI
 cargo run --release -p whisperforge-cli -- -a audio.wav -m tiny_en_converted
 ```
+
+## Commit Message Convention
+
+All commits must follow [Conventional Commits](https://www.conventionalcommits.org/) format:
+```
+type(scope)?: description
+
+[optional body]
+```
+
+Types: `feat` (feature), `fix` (bug fix), `docs` (docs), `refactor` (code change), `perf` (performance), `style`, `test`, `chore`, `ci`, `build`, `revert`.
+
+Examples:
+```
+feat: add streaming inference
+fix(decoding): handle EOT suppression at step 0
+docs: explain mel-scale setup
+chore: release v0.4.0
+ci: disable wgpu on windows
+```
+
+The `commit-msg` hook validates this; non-conforming commits are blocked. `git-cliff` auto-generates CHANGELOG from commits using this format.
 
 Model files (`.mpk`, `.cfg`, tokenizer) are git-ignored. Download from HuggingFace and convert with `whisperforge-convert`.
 
@@ -120,6 +145,7 @@ New crate `whisperforge-wasm`; `wasm-bindgen` wrapper; `async fn transcribe(audi
 | `/bench` | Run LJSpeech WER benchmark |
 | `/check` | Full quality gate: fmt check → clippy → compile |
 | `/phase` | Current phase status and next commits |
+| `/release` | Pre-release gate + guided `cargo release` (dry-run → confirm → tag/push) |
 
 ### Hooks (auto-configured in `.claude/settings.json`)
 

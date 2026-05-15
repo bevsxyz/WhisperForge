@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# mise description="Verify git-cliff can generate CHANGELOG from current commits (dry-run)"
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+git-cliff --unreleased --output /dev/null 2>&1 || {
+    echo "FAIL: git-cliff could not generate CHANGELOG — check cliff.toml or commit history"
+    exit 1
+}
+
+echo "Changelog OK (cliff dry-run passed)"
