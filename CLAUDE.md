@@ -96,7 +96,7 @@ INT8 post-training quantization (~4× size reduction: 150 MB → 37 MB).
 - `--quantize int8` flag in `whisperforge-convert` (uses `Module::quantize_weights`)
 - `Precision` enum (Fp32/Int8) in convert pipeline; metadata recorded in `.cfg` sidecar
 - Load path unchanged — recorder transparently handles quantized DType
-- **Known limitation**: NdArray CPU backend has Burn 0.21 quantization bug (unwrap panic). Workaround: offline conversion via GPU backend (Wgpu/Cuda), then load any quantized model in CLI without issues.
+- **Known limitation**: NdArray CPU backend has Burn 0.21 quantization bug (unwrap panic during quantized *conversion*). WGPU/WGSL has no INT8 element type, so Burn cannot place QFloat tensors on a WGPU device. Fix (in `load.rs`): INT8 models are transparently loaded on `Flex<f32>` CPU first, dequantized via `Dequantizer` mapper, re-serialized to FP32 bytes, then loaded on the target backend. Only triggers when `.cfg` reports `precision: int8`. The 38 MB file expands to ~150 MB in RAM; disk size advantage is preserved.
 
 ### Phase D — WASM Target ⬜ PLANNED
 

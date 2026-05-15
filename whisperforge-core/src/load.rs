@@ -3,10 +3,11 @@
 
 use anyhow::{Context, Result};
 use burn::{
-    module::Module,
+    module::{Module, ModuleMapper, Param},
     record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder},
-    tensor::backend::Backend,
+    tensor::{Tensor, backend::Backend},
 };
+use burn_flex::{Flex, FlexDevice};
 use serde::Deserialize;
 
 #[cfg(feature = "file-io")]
@@ -80,16 +81,56 @@ pub fn load_config_from_bytes(bytes: &[u8]) -> Result<WhisperConfig> {
     Ok(file_config.into())
 }
 
+/// Dequantizes INT8 tensor params back to FP32, used inside [`dequantize_weights_to_fp32`].
+struct Dequantizer;
+
+impl<B: Backend> ModuleMapper<B> for Dequantizer {
+    fn map_float<const D: usize>(&mut self, param: Param<Tensor<B, D>>) -> Param<Tensor<B, D>> {
+        let (id, tensor, mapper) = param.consume();
+        Param::from_mapped_value(id, tensor.dequantize(), mapper)
+    }
+}
+
+/// Load an INT8-quantized model on the CPU (burn-flex), dequantize all weights to FP32,
+/// and re-serialize to in-memory bytes. The returned bytes are a plain FP32 NamedMpk
+/// that any backend can load without needing INT8 kernel support.
+///
+/// WGPU/WGSL has no i8 element type, so this indirection is required for quantized models
+/// on the GPU path. Only called when the .cfg reports `precision: int8`.
+fn dequantize_weights_to_fp32(config: &WhisperConfig, bytes: Vec<u8>) -> Result<Vec<u8>> {
+    type Cpu = Flex<f32>;
+    let device = FlexDevice;
+    let recorder = NamedMpkBytesRecorder::<FullPrecisionSettings>::new();
+
+    let cpu_model: Whisper<Cpu> = config.init::<Cpu>(&device);
+    let record = recorder
+        .load(bytes, &device)
+        .map_err(|e| anyhow::anyhow!("Failed to load quantized weights on CPU: {:?}", e))?;
+    let cpu_model = cpu_model.load_record(record).map(&mut Dequantizer);
+
+    recorder
+        .record(cpu_model.into_record(), ())
+        .map_err(|e| anyhow::anyhow!("Failed to re-serialize dequantized weights: {:?}", e))
+}
+
 /// Load a Whisper model from in-memory NamedMpk bytes.
 ///
 /// `config` is the parsed model config (from [`load_config_from_bytes`]).
-/// `weights` is the raw contents of a `.mpk` file. This is the WASM-compatible
-/// path — no filesystem access required.
+/// `weights` is the raw contents of a `.mpk` file.
+/// `precision` is the optional precision from the `.cfg` sidecar; pass `None` when unknown.
+///
+/// INT8-quantized models are transparently dequantized on the CPU before being loaded
+/// onto `device`, so this works on backends (e.g. WGPU) that have no INT8 kernel support.
 pub fn load_whisper_from_bytes<B: Backend>(
     config: &WhisperConfig,
     weights: Vec<u8>,
+    precision: Option<ModelPrecision>,
     device: &B::Device,
 ) -> Result<Whisper<B>> {
+    let weights = match precision {
+        Some(ModelPrecision::Int8) => dequantize_weights_to_fp32(config, weights)?,
+        _ => weights,
+    };
     let model = config.init::<B>(device);
     let recorder = NamedMpkBytesRecorder::<FullPrecisionSettings>::new();
     let model = model.load_record(
@@ -123,8 +164,11 @@ pub fn load_whisper<B: Backend>(model_path: &str, device: &B::Device) -> Result<
     let weights_bytes = std::fs::read(&weights_path)
         .with_context(|| format!("Failed to read weights file: {}", weights_path.display()))?;
 
-    let config = load_config_from_bytes(&config_bytes)?;
-    load_whisper_from_bytes(&config, weights_bytes, device)
+    let file_config: WhisperModelConfig =
+        serde_json::from_slice(&config_bytes).with_context(|| "Failed to parse config JSON")?;
+    let precision = file_config.precision;
+    let config: WhisperConfig = file_config.into();
+    load_whisper_from_bytes(&config, weights_bytes, precision, device)
 }
 
 /// Load just the config from a `.cfg` file path.
