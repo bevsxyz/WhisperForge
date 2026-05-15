@@ -16,6 +16,7 @@ use whisperforge_diarize::SpeakerDiarizer;
 
 #[derive(Parser, Debug)]
 #[command(name = "whisperforge")]
+#[command(version)]
 #[command(about = "A fast Whisper transcription tool in Rust")]
 struct Args {
     #[arg(short, long)]
