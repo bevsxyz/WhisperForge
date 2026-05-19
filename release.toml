@@ -3,6 +3,6 @@ push = true
 publish = false
 sign-commit = false
 sign-tag = false
-pre-release-hook = ["sh", "-c", "git-cliff --tag v{{version}} --output CHANGELOG.md || true"]
+pre-release-hook = ["sh", "-c", "eval \"$(mise activate bash)\" && git-cliff --tag v{{version}} --output CHANGELOG.md || true"]
 pre-release-commit-message = "chore: release v{{version}}"
 tag-message = "Release v{{version}}"
