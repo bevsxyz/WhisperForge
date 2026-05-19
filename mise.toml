@@ -42,8 +42,5 @@ description="Bump version and release via cargo-release"
 run="""
 #!/bin/sh
 set -e
-CARGO_RELEASE="/home/stanely/.local/share/mise/installs/cargo-cargo-release/1.1.2/bin/cargo-release"
-GIT_CLIFF="/home/stanely/.local/share/mise/installs/git-cliff/2.13.1/git-cliff-2.13.1"
-export PATH="$GIT_CLIFF:$PATH"
-"$CARGO_RELEASE" release "$@"
+cargo-release release "$@"
 """
