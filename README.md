@@ -26,7 +26,7 @@ A high-performance Rust implementation of OpenAI's Whisper speech-to-text model 
 
 ## Project Status
 
-✅ **Production Ready** — All core features complete (Phases A–C).
+✅ **Production Ready** — Core features complete (Phases A–C + E). Realtime streaming (Phase F) next.
 
 | Component | Status |
 |---|---|
@@ -37,9 +37,12 @@ A high-performance Rust implementation of OpenAI's Whisper speech-to-text model 
 | Per-token timestamps (cross-attention) | ✅ Complete |
 | SRT / JSON / text output | ✅ Complete |
 | GPU acceleration (WGPU: Vulkan/DX12/Metal) | ✅ Complete |
+| Native CUDA backend (CubeCL) | ✅ Complete (feature `cuda`) |
+| Single `wf` CLI: `transcribe` / `convert` / `list-models` | ✅ Complete |
 | Speaker diarization (encoder embeddings) | ✅ Complete |
 | INT8 quantization (~4× compression) | ✅ Complete |
-| WASM target (browser support) | ⬜ Planned (Phase D) |
+| Realtime streaming (mic input, token-level output) | ⬜ Next (Phase F) |
+| WASM target (browser support) | ⏸ Deferred (Phase D blocker) |
 
 ## Installation
 
@@ -86,24 +89,27 @@ println!("{}", transcript);
 
 ### Using the CLI
 
-After [installing](#installation), download a model and transcribe audio:
+After [installing](#installation), grab a model and transcribe:
 
 ```bash
-# Convert a Whisper model from HuggingFace
-wf convert --model-id openai/whisper-tiny.en --output models/tiny_en_converted
+# 1. Convert a Whisper model from HuggingFace (writes models/tiny_en.{mpk,cfg} + tokenizer.json)
+wf convert --model-id openai/whisper-tiny.en --output models/tiny_en
 
-# Transcribe (auto-selects GPU when compiled in; force a backend with --device cpu|wgpu|cuda)
-wf transcribe -a audio.wav -m tiny_en_converted
+# 2. Transcribe (auto-selects WGPU when compiled in; override with --device cpu|wgpu|cuda)
+wf transcribe -a audio.wav -m tiny_en
+
+# Browse converted models (honors --models-dir / WF_MODELS_DIR)
+wf list-models
 
 # SRT with speaker labels
-wf transcribe -a audio.wav -m tiny_en_converted --output-format srt --diarize -o output.srt
+wf transcribe -a audio.wav -m tiny_en --output-format srt --diarize -o output.srt
 
 # JSON output
 wf transcribe -a audio.wav --output-format json
 
-# Native CUDA backend (requires CUDA toolkit on the host at build time)
+# Native CUDA (CubeCL) — requires CUDA toolkit at build time
 cargo install whisperforge --features cuda
-wf transcribe -a audio.wav -m tiny_en_converted --device cuda
+wf transcribe -a audio.wav -m tiny_en --device cuda
 ```
 
 ### For Contributors

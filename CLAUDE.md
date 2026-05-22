@@ -114,11 +114,13 @@ Key files in `whisperforge-core/src/`:
 - **Symphonia over hound**: handles format dispatch automatically; hound silently clips integer WAV.
 - **Stale artifacts**: run `cargo clean` before concluding a crate is broken after a toolchain change.
 - **Burn 0.21**: `.squeeze()` takes no arguments; use `NamedMpkFileRecorder::<FullPrecisionSettings>::new()`; `PaddingConfig1d::Explicit` takes two args: `Explicit(left, right)` — symmetric padding is `Explicit(1, 1)` not `Explicit(1)`.
-- **Windows wgpu incompatibility**: wgpu-hal 29.0.3 depends on `windows` 0.61.3 but gpu-allocator 0.28.0 pulls in 0.62.2, causing version conflict on Windows. Fix: use target-specific dependencies in the `whisperforge` crate to disable wgpu feature on Windows (CPU fallback). TODO: Remove when Burn/wgpu update resolves this.
+- **Windows wgpu incompatibility (compile-time)**: `wgpu-hal 29.0.3` pulls `windows = 0.61.3`; `gpu-allocator 0.28.0` pulls `windows = 0.62.2`. Cargo can't resolve both on Windows when the `gpu` feature is on, so the build fails to *compile*, not at runtime — no runtime fallback (`catch_unwind`, adapter probe, etc.) can paper over it. Workaround: the Windows release CI job uses `--no-default-features`, shipping a CPU-only Windows binary. To check whether this is still needed, run `grep -A1 'name = "windows"' Cargo.lock` — if both versions still appear under `wgpu-hal` / `gpu-allocator` dep trees, the carve-out stays. Drop it once upstream converges on a single `windows` major.
+- **`burn-cuda` type alias index width is `u8`, not `u32`**: `burn_cuda::Cuda<F, I>` resolves to `CubeBackend<CudaRuntime, F, I, u8>`. Mirroring the `burn-wgpu` pattern verbatim (`<…, u32>`) compiles but constructs the wrong type. Always use the public `Cuda<f32, i32>` alias rather than spelling the `CubeBackend` generics yourself.
+- **NamedMpk record output is non-deterministic byte-wise**: the `.cfg` sidecar is byte-identical across runs, but `.mpk` files have the same size and content semantically while differing at the byte level (MessagePack iteration order). Diff `.cfg` and compare `.mpk` sizes — don't require byte-identical `.mpk` for "same conversion" checks.
 
 ## Roadmap
 
-Phases 1–7 + A–B + B.5 complete. **Current: Phase C (Quantization), then D.**
+Phases 1–7 + A–B + B.5 + C + E complete. Phase D (WASM) deferred. **Next: Phase F = streaming realtime.**
 
 ### Phase B.5 — CubeCL Mel Pipeline ✅ COMPLETE
 
@@ -136,9 +138,27 @@ INT8 post-training quantization (~4× size reduction: 150 MB → 37 MB). Lives i
 - Load path unchanged — recorder transparently handles quantized DType
 - **Known limitation**: NdArray CPU backend has Burn 0.21 quantization bug (unwrap panic during quantized *conversion*). WGPU/WGSL has no INT8 element type, so Burn cannot place QFloat tensors on a WGPU device. Fix (in `load.rs`): INT8 models are transparently loaded on `Flex<f32>` CPU first, dequantized via `Dequantizer` mapper, re-serialized to FP32 bytes, then loaded on the target backend. Only triggers when `.cfg` reports `precision: int8`. The 38 MB file expands to ~150 MB in RAM; disk size advantage is preserved.
 
-### Phase D — WASM Target ⬜ PLANNED
+### Phase D — WASM Target ⏸ DEFERRED
 
-New crate `whisperforge-wasm`; `wasm-bindgen` wrapper; `async fn transcribe(audio_samples, sample_rate, model_bytes, config_bytes) -> String`; browser example with `getUserMedia`. Requires Phase B streaming + Phase C quantization.
+Rolled back after C++ transitive deps blocked the JS-tokenizer path. Re-evaluation gated on a viable pure-Rust tokenizer story or a different IO boundary. See [memory/phase_d_wasm_blocker.md](../memory/phase_d_wasm_blocker.md).
+
+### Phase E — Foundation: crate merger + CLI UX + device selection ✅ COMPLETE (with carve-outs)
+
+Goal was to clean the crate / CLI surface before streaming work. Targets 0.4.0 (breaking).
+
+- ✅ `whisperforge-cli` → `whisperforge` (single `wf` binary, `autobins = false`)
+- ✅ `whisperforge-convert` folded into `wf convert` (workspace shrunk 5 → 4 crates)
+- ✅ `wf list-models` + `WF_MODELS_DIR` / `--models-dir` honored by `transcribe` and `list-models`
+- ✅ Friendly model-not-found error pointing at `list-models` / `convert`
+- ✅ `--task translate` removed (was parsed-then-runtime-errored)
+- ✅ `--cpu` removed; replaced with `--device <auto|cpu|wgpu|cuda>` defaulting to `auto`
+- ✅ Native CUDA via optional `burn-cuda` (feature `cuda`); `auto` preference is cuda → wgpu → cpu
+- ⏸ Commit 6 (VRAM-aware encoder-batch auto-tune) — **deferred**. Heuristics had a poor cost/risk ratio (extra deps for sysinfo + wgpu adapter probe + WSL/integrated-GPU reporting quirks vs. a modest UX win nobody had asked for). Users override with `--encoder-batch-size` for now.
+- ⏸ Commit 7 (Windows wgpu runtime fallback) — **deferred**. Upstream `windows`-crate version conflict between wgpu-hal and gpu-allocator is *compile-time*; no runtime probe can rescue it. Windows still ships CPU-only via release.yml `--no-default-features`. Revisit when `grep -A1 'name = "windows"' Cargo.lock` shows one version.
+
+### Phase F — Streaming Realtime ⬜ NEXT
+
+Token-level output, mic input via `cpal`, ring-buffer chunking, KV-cache across windows. Headline goal: end-to-end realtime ASR. Subsequent phases (EOU detection, denoising, Moonshine) become tractable once the streaming framework lands.
 
 ## Code conventions
 

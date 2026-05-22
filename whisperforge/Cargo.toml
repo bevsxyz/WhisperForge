@@ -42,7 +42,7 @@ cubecl-stft = ["dep:burn-wgpu", "whisperforge-core/cubecl-stft"]
 gpu = ["burn/wgpu"]
 cuda = ["dep:burn-cuda"]
 default = ["gpu"]
-
-# Disable gpu feature on Windows to avoid wgpu version conflict
-[target.'cfg(windows)'.dev-dependencies]
-# Placeholder to ensure target-specific overrides compile
+# Windows builds: CI passes `--no-default-features` because the wgpu-hal /
+# gpu-allocator transitive `windows` crate version conflict can't be resolved
+# inside this crate (see CLAUDE.md § Hard-won lessons). When upstream lands a
+# matching `windows` version, drop the carve-out from .github/workflows/release.yml.
