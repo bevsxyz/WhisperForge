@@ -1,28 +1,138 @@
-// Convert OpenAI Whisper models to Burn 0.20 format
+// Convert OpenAI Whisper safetensors to Burn .mpk format.
 //
-// This module handles loading safetensors files and converting them
-// to our Whisper model structure.
+// Merged from the former `whisperforge-convert` crate. Exposes the
+// `wf convert` subcommand plus the underlying conversion + inspection helpers.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use burn::{
-    module::{Module, Quantizer},
+    module::{Module, Param, Quantizer},
     record::{FullPrecisionSettings, NamedMpkFileRecorder},
     tensor::ops::QuantizedTensor,
     tensor::quantization::{Calibration, QTensorPrimitive, QuantValue},
     tensor::{Tensor, TensorData, backend::Backend},
 };
+use burn_flex::Flex;
+use burn_flex::FlexDevice;
+use clap::{Parser, ValueEnum};
+use hf_hub::{Repo, RepoType, api::tokio::Api};
 use safetensors::SafeTensors;
-
+use whisperforge_core::model::{AudioEncoder, TextDecoder};
 use whisperforge_core::{Whisper, WhisperConfig};
+
+#[derive(ValueEnum, Clone, Copy, Default, Debug)]
+pub enum Quantize {
+    #[default]
+    None,
+    Int8,
+}
+
+#[derive(Parser, Debug)]
+pub struct ConvertArgs {
+    /// HuggingFace model ID (e.g., openai/whisper-tiny.en)
+    #[arg(long, default_value = "openai/whisper-tiny.en")]
+    pub model_id: String,
+
+    /// Output path without extension (e.g., models/tiny_en_converted)
+    #[arg(long)]
+    pub output: String,
+
+    /// Use a local safetensors file instead of downloading
+    #[arg(long)]
+    pub local_safetensors: Option<String>,
+
+    /// Quantization mode
+    #[arg(long, value_enum, default_value_t = Quantize::None)]
+    pub quantize: Quantize,
+}
 
 /// Model quantization precision for conversion
 #[derive(Clone, Copy, Debug)]
 pub enum Precision {
     Fp32,
     Int8,
+}
+
+type B = Flex<f32>;
+
+pub fn run(args: ConvertArgs) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
+    rt.block_on(run_async(args))
+}
+
+async fn run_async(args: ConvertArgs) -> Result<()> {
+    let device = FlexDevice;
+
+    let output_path = std::path::Path::new(&args.output);
+
+    // Both the CLI and benchmark test expect {output_dir}/tokenizer.json.
+    let tokenizer_dest = output_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("tokenizer.json");
+
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).context("creating output directory")?;
+    }
+
+    let safetensors_path = if let Some(local_path) = &args.local_safetensors {
+        let local_tokenizer = std::path::Path::new(local_path).with_file_name("tokenizer.json");
+        if local_tokenizer.exists() {
+            // Canonicalize to avoid copying a file onto itself when source == dest.
+            let src = local_tokenizer
+                .canonicalize()
+                .unwrap_or(local_tokenizer.clone());
+            let dst = tokenizer_dest
+                .canonicalize()
+                .unwrap_or(tokenizer_dest.clone());
+            if src != dst {
+                std::fs::copy(&local_tokenizer, &tokenizer_dest)
+                    .context("copying local tokenizer.json")?;
+                println!("Copied tokenizer to: {}", tokenizer_dest.display());
+            } else {
+                println!(
+                    "Tokenizer already at destination: {}",
+                    tokenizer_dest.display()
+                );
+            }
+        } else {
+            println!("Warning: no tokenizer.json found next to local safetensors file");
+        }
+        std::path::PathBuf::from(local_path)
+    } else {
+        println!("Downloading from HuggingFace: {}", args.model_id);
+        let api = Api::new().context("initialising HuggingFace API")?;
+        let repo = api.repo(Repo::new(args.model_id.clone(), RepoType::Model));
+
+        let tok_cache = repo
+            .get("tokenizer.json")
+            .await
+            .context("downloading tokenizer.json")?;
+        std::fs::copy(&tok_cache, &tokenizer_dest).context("saving tokenizer.json")?;
+        println!("Saved tokenizer to: {}", tokenizer_dest.display());
+
+        repo.get("model.safetensors")
+            .await
+            .context("downloading model.safetensors")?
+    };
+
+    println!(
+        "Converting {} → {}.mpk …",
+        safetensors_path.display(),
+        output_path.display()
+    );
+
+    let precision = match args.quantize {
+        Quantize::None => Precision::Fp32,
+        Quantize::Int8 => Precision::Int8,
+    };
+
+    convert_openai_to_burn::<B>(&safetensors_path, output_path, &device, precision)?;
+
+    println!("Done!");
+    Ok(())
 }
 
 /// Convert an OpenAI Whisper model to Burn format
@@ -273,9 +383,6 @@ impl RawTensorData {
         Tensor::from_data(tensor_data, device)
     }
 }
-
-use burn::module::Param;
-use whisperforge_core::model::{AudioEncoder, TextDecoder};
 
 fn load_encoder<B: Backend>(
     encoder: &AudioEncoder<B>,
@@ -680,11 +787,27 @@ impl From<&WhisperConfig> for WhisperConfigFile {
     }
 }
 
+/// Inspect a safetensors file and return `(name, shape, dtype)` for each tensor,
+/// sorted by name for stable output. Used by the `inspect` test.
+#[allow(dead_code)]
+pub fn inspect_safetensors(path: &Path) -> Result<Vec<(String, Vec<usize>, String)>> {
+    let data = std::fs::read(path)?;
+    let tensors = SafeTensors::deserialize(&data)?;
+
+    let mut result = Vec::new();
+    for (name, tensor) in tensors.tensors() {
+        let shape: Vec<usize> = tensor.shape().to_vec();
+        let dtype = format!("{:?}", tensor.dtype());
+        result.push((name.to_string(), shape, dtype));
+    }
+
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn_flex::Flex;
-    use burn_flex::FlexDevice;
     use std::path::PathBuf;
 
     fn models_dir() -> PathBuf {
@@ -761,5 +884,23 @@ mod tests {
             Ok(()) => println!("Conversion successful!"),
             Err(e) => panic!("Conversion failed: {:?}", e),
         }
+    }
+
+    #[test]
+    fn test_inspect_openai_model() {
+        let model_path = models_dir().join("tiny_en_openai.safetensors");
+
+        if !model_path.exists() {
+            eprintln!("Skipping: model not found at {:?}", model_path);
+            return;
+        }
+
+        let tensors = inspect_safetensors(&model_path).unwrap();
+
+        println!("\n=== OpenAI Whisper tiny.en Tensor Names ===\n");
+        for (name, shape, dtype) in &tensors {
+            println!("{:60} {:20?} {}", name, shape, dtype);
+        }
+        println!("\nTotal tensors: {}", tensors.len());
     }
 }

@@ -9,7 +9,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 cargo check --all
 
 # Tests — ALWAYS use --release and exclude whisperforge-align (has known pre-existing failures)
-cargo test --release -p whisperforge-core -p whisperforge-convert -p whisperforge
+cargo test --release -p whisperforge-core -p whisperforge
 
 # Single test with output
 cargo test --release -p whisperforge-core load::tests::test_load_whisper_model -- --nocapture --exact
@@ -23,8 +23,11 @@ mise run setup
 # Release (bumps version, generates CHANGELOG via git-cliff, tags, pushes)
 cargo release patch   # or minor / major
 
-# Run the CLI
-cargo run --release -p whisperforge -- -a audio.wav -m tiny_en_converted
+# Run the CLI (transcribe is a subcommand post-Phase E merger)
+cargo run --release -p whisperforge -- transcribe -a audio.wav -m tiny_en_converted
+
+# Convert a HuggingFace Whisper model to Burn format
+cargo run --release -p whisperforge -- convert --model-id openai/whisper-tiny.en --output models/tiny_en_converted
 ```
 
 ## Commit Message Convention
@@ -49,17 +52,16 @@ ci: disable wgpu on windows
 
 The `commit-msg` hook validates this; non-conforming commits are blocked. `git-cliff` auto-generates CHANGELOG from commits using this format.
 
-Model files (`.mpk`, `.cfg`, tokenizer) are git-ignored. Download from HuggingFace and convert with `whisperforge-convert`.
+Model files (`.mpk`, `.cfg`, tokenizer) are git-ignored. Download from HuggingFace and convert with `wf convert`.
 
 ## Architecture
 
-Five-crate Rust workspace using [Burn 0.21](https://burn.dev/) for GPU-accelerated ML inference.
+Four-crate Rust workspace using [Burn 0.21](https://burn.dev/) for GPU-accelerated ML inference.
 
 | Crate | Role |
 |-------|------|
 | `whisperforge-core` | Whisper model + decoding — primary development area |
-| `whisperforge` | `wf` binary (transcription + model conversion subcommand, post-Phase E merger) |
-| `whisperforge-convert` | One-shot HuggingFace safetensors → Burn NamedMpk conversion |
+| `whisperforge` | `wf` binary; hosts `wf transcribe` and `wf convert` subcommands (post-Phase E merger) |
 | `whisperforge-align` | VAD, segmentation, SRT output (has known test failures; work cautiously) |
 | `whisperforge-diarize` | Speaker diarization (Option A shipped; Option B deferred) |
 
@@ -117,8 +119,8 @@ Phases 1–7 + A–B + B.5 complete. **Current: Phase C (Quantization), then D.*
 
 ### Phase C — Quantization ✅ COMPLETE
 
-INT8 post-training quantization (~4× size reduction: 150 MB → 37 MB).
-- `--quantize int8` flag in `whisperforge-convert` (uses `Module::quantize_weights`)
+INT8 post-training quantization (~4× size reduction: 150 MB → 37 MB). Lives in `whisperforge::commands::convert` post-Phase E merger.
+- `--quantize int8` flag on `wf convert` (uses `Module::quantize_weights`)
 - `Precision` enum (Fp32/Int8) in convert pipeline; metadata recorded in `.cfg` sidecar
 - Load path unchanged — recorder transparently handles quantized DType
 - **Known limitation**: NdArray CPU backend has Burn 0.21 quantization bug (unwrap panic during quantized *conversion*). WGPU/WGSL has no INT8 element type, so Burn cannot place QFloat tensors on a WGPU device. Fix (in `load.rs`): INT8 models are transparently loaded on `Flex<f32>` CPU first, dequantized via `Dequantizer` mapper, re-serialized to FP32 bytes, then loaded on the target backend. Only triggers when `.cfg` reports `precision: int8`. The 38 MB file expands to ~150 MB in RAM; disk size advantage is preserved.

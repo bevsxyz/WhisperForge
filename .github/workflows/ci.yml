@@ -43,4 +43,4 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --release --locked -p whisperforge-core -p whisperforge-convert -p whisperforge
+        run: cargo test --release --locked -p whisperforge-core -p whisperforge

@@ -8,7 +8,6 @@
       "Bash(cargo clippy *)",
       "Bash(cargo fmt *)",
       "Bash(cargo test --release -p whisperforge-core *)",
-      "Bash(cargo test --release -p whisperforge-convert *)",
       "Bash(cargo test --release -p whisperforge *)",
       "Bash(cargo run --release -p whisperforge *)",
       "Bash(mise run *)",
@@ -51,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=$(cat) && echo \"$f\" | grep -q '.rs' && root=$(pwd) && rg '^pub (fn|struct|enum|trait|type|const)' --type rust -n whisperforge-core/src whisperforge/src whisperforge-convert/src whisperforge-diarize/src whisperforge-align/src 2>/dev/null | sed \"s|^$root/||\" > CODEINDEX.md || true"
+            "command": "f=$(cat) && echo \"$f\" | grep -q '.rs' && root=$(pwd) && rg '^pub (fn|struct|enum|trait|type|const)' --type rust -n whisperforge-core/src whisperforge/src whisperforge-diarize/src whisperforge-align/src 2>/dev/null | sed \"s|^$root/||\" > CODEINDEX.md || true"
           }
         ]
       }

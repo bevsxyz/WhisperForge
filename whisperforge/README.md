@@ -38,6 +38,5 @@ For complete options and usage examples, see the [full documentation](https://gi
 ## See Also
 
 - [`whisperforge-core`](https://crates.io/crates/whisperforge-core) — Library
-- [`whisperforge-convert`](https://crates.io/crates/whisperforge-convert) — Model converter
 - [`whisperforge-align`](https://crates.io/crates/whisperforge-align) — VAD & SRT
 - [`whisperforge-diarize`](https://crates.io/crates/whisperforge-diarize) — Speaker diarization

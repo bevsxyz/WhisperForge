@@ -34,8 +34,7 @@ for segment in segments {
 ## See Also
 
 - [`whisperforge-core`](https://crates.io/crates/whisperforge-core) — Library
-- [`whisperforge`](https://crates.io/crates/whisperforge) — CLI binary (`wf`)
-- [`whisperforge-convert`](https://crates.io/crates/whisperforge-convert) — Model converter
+- [`whisperforge`](https://crates.io/crates/whisperforge) — CLI binary (`wf`); `wf convert` ports HuggingFace safetensors
 - [`whisperforge-diarize`](https://crates.io/crates/whisperforge-diarize) — Speaker diarization
 
 For full documentation, visit the [WhisperForge repository](https://github.com/bevsxyz/WhisperForge).

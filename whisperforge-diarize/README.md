@@ -50,8 +50,7 @@ SPEAKER_1: I'm doing great, thanks for asking.
 ## See Also
 
 - [`whisperforge-core`](https://crates.io/crates/whisperforge-core) — Library
-- [`whisperforge`](https://crates.io/crates/whisperforge) — CLI binary (`wf`)
-- [`whisperforge-convert`](https://crates.io/crates/whisperforge-convert) — Model converter
+- [`whisperforge`](https://crates.io/crates/whisperforge) — CLI binary (`wf`); `wf convert` ports HuggingFace safetensors
 - [`whisperforge-align`](https://crates.io/crates/whisperforge-align) — VAD & SRT
 
 For full documentation, visit the [WhisperForge repository](https://github.com/bevsxyz/WhisperForge).

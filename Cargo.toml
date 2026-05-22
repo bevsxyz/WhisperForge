@@ -4,7 +4,6 @@ members = [
     "whisperforge-align",
     "whisperforge-diarize",
     "whisperforge",
-    "whisperforge-convert",
 ]
 resolver = "2"
 

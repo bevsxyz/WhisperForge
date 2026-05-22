@@ -13,15 +13,13 @@ cargo build --release -p whisperforge --features gpu
 # CPU-only variant — mirrors Windows release build; catches --no-default-features regressions
 cargo build --release -p whisperforge --no-default-features
 
-# Convert binary
-cargo build --release -p whisperforge-convert
-
 # ── 2. Smoke tests ────────────────────────────────────────────────────────────
 echo "=== [2/2] Smoke tests"
 BIN="./target/release/wf"
-CONV="./target/release/whisperforge-convert"
 
 "$BIN" --help > /dev/null
+"$BIN" transcribe --help > /dev/null
+"$BIN" convert --help > /dev/null
 
 CARGO_VER=$(grep '^version' Cargo.toml | head -1 | grep -oP '"\K[^"]+')
 BIN_VER=$("$BIN" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
@@ -31,18 +29,16 @@ BIN_VER=$("$BIN" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
 }
 
 # Missing audio → must exit nonzero
-"$BIN" -a /no_such_audio_file_9999.wav -m tiny_en_converted && {
+"$BIN" transcribe -a /no_such_audio_file_9999.wav -m tiny_en_converted && {
     echo "FAIL: missing audio was accepted (expected nonzero exit)"
     exit 1
 } || true
 
 # --task translate → must exit nonzero (not implemented)
-"$BIN" -a /dev/null -m no_model --task translate && {
+"$BIN" transcribe -a /dev/null -m no_model --task translate && {
     echo "FAIL: --task translate was accepted (expected nonzero exit)"
     exit 1
 } || true
-
-"$CONV" --help > /dev/null
 
 echo ""
 echo "=== Release check PASSED ==="

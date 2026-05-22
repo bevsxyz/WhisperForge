@@ -254,7 +254,7 @@ mod tests {
         if !model_path.with_extension("mpk").exists() {
             eprintln!("Skipping test: model files not found at {:?}", model_path);
             eprintln!(
-                "Run `cargo test -p whisperforge-convert test_convert_tiny_en` first to generate the model"
+                "Run `cargo test -p whisperforge test_convert_tiny_en` first to generate the model"
             );
             return;
         }
