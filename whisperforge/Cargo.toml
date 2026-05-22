@@ -21,7 +21,7 @@ path = "src/main.rs"
 whisperforge-core = { path = "../whisperforge-core", version = "0.3" }
 whisperforge-align = { path = "../whisperforge-align", version = "0.3" }
 whisperforge-diarize = { path = "../whisperforge-diarize", version = "0.3" }
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

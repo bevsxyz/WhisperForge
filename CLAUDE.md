@@ -28,7 +28,12 @@ cargo run --release -p whisperforge -- transcribe -a audio.wav -m tiny_en_conver
 
 # Convert a HuggingFace Whisper model to Burn format
 cargo run --release -p whisperforge -- convert --model-id openai/whisper-tiny.en --output models/tiny_en_converted
+
+# List converted models under ./models (override with --models-dir or WF_MODELS_DIR)
+cargo run --release -p whisperforge -- list-models
 ```
+
+`wf transcribe` and `wf list-models` honor `WF_MODELS_DIR` (default `./models/`). `--models-dir <PATH>` on either subcommand overrides the env var.
 
 ## Commit Message Convention
 

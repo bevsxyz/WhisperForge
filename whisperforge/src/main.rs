@@ -20,6 +20,8 @@ enum Command {
     Transcribe(commands::transcribe::TranscribeArgs),
     /// Convert a HuggingFace Whisper safetensors model to Burn `.mpk` format
     Convert(commands::convert::ConvertArgs),
+    /// List converted models available under the models directory
+    ListModels(commands::list_models::ListModelsArgs),
 }
 
 fn main() -> Result<()> {
@@ -27,5 +29,6 @@ fn main() -> Result<()> {
     match cli.cmd {
         Command::Transcribe(args) => commands::transcribe::run(args),
         Command::Convert(args) => commands::convert::run(args),
+        Command::ListModels(args) => commands::list_models::run(args),
     }
 }

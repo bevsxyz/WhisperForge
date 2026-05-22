@@ -20,6 +20,7 @@ BIN="./target/release/wf"
 "$BIN" --help > /dev/null
 "$BIN" transcribe --help > /dev/null
 "$BIN" convert --help > /dev/null
+"$BIN" list-models --help > /dev/null
 
 CARGO_VER=$(grep '^version' Cargo.toml | head -1 | grep -oP '"\K[^"]+')
 BIN_VER=$("$BIN" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
@@ -34,9 +35,9 @@ BIN_VER=$("$BIN" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
     exit 1
 } || true
 
-# --task translate → must exit nonzero (not implemented)
-"$BIN" transcribe -a /dev/null -m no_model --task translate && {
-    echo "FAIL: --task translate was accepted (expected nonzero exit)"
+# Missing model → must exit nonzero with friendly error
+"$BIN" transcribe -a /dev/null -m no_such_model_xyz && {
+    echo "FAIL: missing model was accepted (expected nonzero exit)"
     exit 1
 } || true
 

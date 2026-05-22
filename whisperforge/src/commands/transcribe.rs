@@ -5,6 +5,7 @@ use burn_flex::FlexDevice;
 use clap::Parser;
 use std::cmp::Ordering;
 use std::io::Write;
+use std::path::PathBuf;
 use tokenizers::Tokenizer;
 use whisperforge_align::{AudioSegmenter, SrtEntry, SrtWriter};
 use whisperforge_core::{
@@ -13,6 +14,8 @@ use whisperforge_core::{
     extract_speaker_embedding, forward_decoder_cached, load_whisper,
 };
 use whisperforge_diarize::SpeakerDiarizer;
+
+use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
 
 #[derive(Parser, Debug)]
 pub struct TranscribeArgs {
@@ -52,9 +55,9 @@ pub struct TranscribeArgs {
     #[arg(long)]
     pub no_speech_threshold: Option<f32>,
 
-    /// Task: transcribe or translate
-    #[arg(long, default_value = "transcribe")]
-    pub task: String,
+    /// Directory to load model `.mpk`/`.cfg` files from. Defaults to `$WF_MODELS_DIR` or `./models/`.
+    #[arg(long, env = MODELS_DIR_ENV)]
+    pub models_dir: Option<PathBuf>,
 
     /// Enable voice activity detection (VAD) filtering
     #[arg(long)]
@@ -205,14 +208,27 @@ fn run_backend<B: Backend>(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Audio file is required (use --audio-file)"))?;
 
-    println!("Loading model: {}", args.model);
-    let model_path = format!("models/{}", args.model);
-    let model: Whisper<B> = load_whisper(&model_path, &device)?;
+    let models_dir = resolve_models_dir(args.models_dir.as_deref());
+    let base = model_base_path(&models_dir, &args.model);
+    let mpk_path = base.with_extension("mpk");
+    if !mpk_path.exists() {
+        anyhow::bail!(
+            "model '{name}' not found in {dir}. Run `wf list-models` to see available models, or `wf convert --model-id openai/whisper-{name} --output {dir}/{name}` to fetch and convert it.",
+            name = args.model,
+            dir = models_dir.display(),
+        );
+    }
+
+    println!("Loading model: {}", base.display());
+    let model: Whisper<B> = load_whisper(
+        base.to_str().context("models-dir is not valid UTF-8")?,
+        &device,
+    )?;
     println!("Model loaded successfully!");
 
-    let tokenizer_path = "models/tokenizer.json";
-    println!("Loading tokenizer from: {}", tokenizer_path);
-    let tokenizer = Tokenizer::from_file(tokenizer_path)
+    let tokenizer_path = models_dir.join("tokenizer.json");
+    println!("Loading tokenizer from: {}", tokenizer_path.display());
+    let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
     let mut decoding_config = match args.decoding_preset.as_str() {
@@ -477,10 +493,6 @@ fn run_backend<B: Backend>(
 }
 
 pub fn run(args: TranscribeArgs) -> Result<()> {
-    if args.task != "transcribe" {
-        anyhow::bail!("Only 'transcribe' is supported. Translation is not yet implemented.");
-    }
-
     println!("WhisperForge v{}", env!("CARGO_PKG_VERSION"));
     println!("Loading model: {}", args.model);
 
