@@ -92,7 +92,7 @@ After [installing](#installation), download a model and transcribe audio:
 # Convert a Whisper model from HuggingFace
 wf convert --model-id openai/whisper-tiny.en --output models/tiny_en_converted
 
-# Transcribe (GPU by default; pass --cpu for the Flex CPU backend)
+# Transcribe (auto-selects GPU when compiled in; force a backend with --device cpu|wgpu|cuda)
 wf transcribe -a audio.wav -m tiny_en_converted
 
 # SRT with speaker labels
@@ -171,13 +171,16 @@ wf transcribe [OPTIONS]
       --temperature <F>            Override sampling temperature
       --length-penalty <F>         Override length penalty
       --no-speech-threshold <F>    No-speech detection threshold
-      --task <TASK>                transcribe | translate [default: transcribe]
+      --models-dir <PATH>          Directory holding `.mpk`/`.cfg` models (or set WF_MODELS_DIR)
       --vad-enabled                Enable voice activity detection
       --vad-threshold <F>          VAD detection threshold (0.0–1.0) [default: 0.5]
-      --cpu                        Use the Flex CPU backend instead of the default WGPU
+      --device <DEVICE>            auto | cpu | wgpu | cuda [default: auto]
       --diarize                    Enable speaker diarization
       --diarize-threshold <F>      Cosine similarity threshold [default: 0.7]
       --encoder-batch-size <N>     Encoder forward-pass batch size
+
+wf list-models [OPTIONS]
+      --models-dir <PATH>          Directory to scan for `.mpk` models (or set WF_MODELS_DIR)
 
 wf convert [OPTIONS]
       --model-id <ID>              HuggingFace model ID [default: openai/whisper-tiny.en]

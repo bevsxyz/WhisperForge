@@ -11,17 +11,18 @@ Fast GPU-accelerated speech-to-text CLI with streaming, quantization, speaker di
 ## Quick Start
 
 ```bash
-# Transcribe audio (CPU)
-wf -a audio.wav -m tiny_en_converted
+# Transcribe audio (auto-selects WGPU when compiled in, otherwise CPU)
+wf transcribe -a audio.wav -m tiny_en_converted
 
-# GPU transcription (Vulkan/DX12/Metal)
-wf -a audio.wav -m tiny_en_converted --wgpu
+# Force CPU backend
+wf transcribe -a audio.wav -m tiny_en_converted --device cpu
 
 # SRT output with speaker diarization
-wf -a audio.wav -m tiny_en_converted --output-format srt --diarize -o output.srt
+wf transcribe -a audio.wav -m tiny_en_converted --output-format srt --diarize -o output.srt
 
-# JSON output
-wf -a audio.wav --output-format json
+# Convert a HuggingFace model and list local models
+wf convert --model-id openai/whisper-tiny.en --output models/tiny_en_converted
+wf list-models
 ```
 
 ## Options
@@ -29,7 +30,7 @@ wf -a audio.wav --output-format json
 - `-a, --audio-file` — Input audio (WAV, MP3, FLAC, OGG, M4A)
 - `-m, --model` — Model name [default: tiny_en_converted]
 - `--output-format` — text | srt | json [default: text]
-- `--wgpu` — Use GPU backend
+- `--device` — auto | cpu | wgpu | cuda [default: auto]
 - `--diarize` — Enable speaker diarization
 - `--decoding-preset` — fast | balanced | accurate
 

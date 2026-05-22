@@ -16,6 +16,7 @@ use whisperforge_core::{
 use whisperforge_diarize::SpeakerDiarizer;
 
 use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
+use crate::device::{DeviceChoice, ResolvedDevice, resolve};
 
 #[derive(Parser, Debug)]
 pub struct TranscribeArgs {
@@ -67,10 +68,9 @@ pub struct TranscribeArgs {
     #[arg(long)]
     pub vad_threshold: Option<f32>,
 
-    /// Use the CPU (Flex) backend instead of the default WGPU backend.
-    /// Useful on systems without Vulkan/DX12/Metal support.
-    #[arg(long)]
-    pub cpu: bool,
+    /// Backend selection: auto (default), cpu, wgpu, or cuda (feature-gated).
+    #[arg(long, value_enum, default_value_t = DeviceChoice::Auto)]
+    pub device: DeviceChoice,
 
     /// Enable speaker diarization (assigns SPEAKER_NN labels to segments)
     #[arg(long)]
@@ -81,7 +81,7 @@ pub struct TranscribeArgs {
     pub diarize_threshold: f32,
 
     /// Encoder forward-pass batch size. Larger = faster but more VRAM/RAM.
-    /// Default: 1 on WGPU (54 MB, safe on any GPU), 4 on --cpu (216 MB, safe on ≥1 GB RAM).
+    /// Default: 1 on WGPU (54 MB, safe on any GPU), 4 on `--device cpu` (216 MB, safe on ≥1 GB RAM).
     #[arg(long)]
     pub encoder_batch_size: Option<usize>,
 
@@ -201,6 +201,7 @@ fn result_to_srt(result: &TranscriptionResult) -> String {
 fn run_backend<B: Backend>(
     args: TranscribeArgs,
     device: B::Device,
+    is_cpu_backend: bool,
     mel_fn: impl Fn(&[AudioData], &B::Device) -> Result<burn::tensor::Tensor<B, 3>>,
 ) -> Result<()> {
     let audio_file = args
@@ -384,7 +385,7 @@ fn run_backend<B: Backend>(
     // WGPU default=1 (54 MB; safe after model weights); CPU default=4 (216 MB; safe on ≥1 GB RAM).
     let enc_batch = args
         .encoder_batch_size
-        .unwrap_or(if args.cpu { 4 } else { 1 })
+        .unwrap_or(if is_cpu_backend { 4 } else { 1 })
         .max(1);
 
     println!(
@@ -496,50 +497,39 @@ pub fn run(args: TranscribeArgs) -> Result<()> {
     println!("WhisperForge v{}", env!("CARGO_PKG_VERSION"));
     println!("Loading model: {}", args.model);
 
-    if args.cpu {
-        println!("Backend: Flex (CPU)");
-        let device = FlexDevice;
-        return run_backend::<Flex<f32>>(args, device, |chunks, dev| {
-            batch_mel_spectrograms::<Flex<f32>>(chunks, 400, 160, 80, dev)
-        });
-    }
-
-    #[cfg(feature = "gpu")]
-    {
-        use burn::backend::wgpu::WgpuDevice;
-        let device = WgpuDevice::default();
-
-        #[cfg(feature = "cubecl-stft")]
-        {
-            use burn_wgpu::CubeBackend;
-            use whisperforge_core::audio::{WgpuBackend, batch_mel_spectrograms_wgpu};
-            println!("Backend: WGPU (GPU, CubeCL STFT)");
-            return run_backend::<CubeBackend<burn_wgpu::WgpuRuntime, f32, i32, u32>>(
-                args,
-                device,
-                |chunks, dev| batch_mel_spectrograms_wgpu(chunks, 400, 160, 80, dev),
-            );
-            #[allow(unreachable_code)]
-            #[allow(clippy::diverging_sub_expression)]
-            let _: (WgpuBackend,) = unreachable!(); // suppress unused import
+    let resolved = resolve(args.device)?;
+    match resolved {
+        ResolvedDevice::Cpu => {
+            println!("Backend: Flex (CPU)");
+            run_backend::<Flex<f32>>(args, FlexDevice, true, |chunks, dev| {
+                batch_mel_spectrograms::<Flex<f32>>(chunks, 400, 160, 80, dev)
+            })
         }
+        #[cfg(feature = "gpu")]
+        ResolvedDevice::Wgpu => {
+            use burn::backend::wgpu::WgpuDevice;
+            let device = WgpuDevice::default();
 
-        #[cfg(not(feature = "cubecl-stft"))]
-        {
-            use burn::backend::Wgpu;
-            println!("Backend: WGPU (GPU)");
-            return run_backend::<Wgpu>(args, device, |chunks, dev| {
-                batch_mel_spectrograms::<Wgpu>(chunks, 400, 160, 80, dev)
-            });
+            #[cfg(feature = "cubecl-stft")]
+            {
+                use burn_wgpu::CubeBackend;
+                use whisperforge_core::audio::batch_mel_spectrograms_wgpu;
+                println!("Backend: WGPU (GPU, CubeCL STFT)");
+                run_backend::<CubeBackend<burn_wgpu::WgpuRuntime, f32, i32, u32>>(
+                    args,
+                    device,
+                    false,
+                    |chunks, dev| batch_mel_spectrograms_wgpu(chunks, 400, 160, 80, dev),
+                )
+            }
+            #[cfg(not(feature = "cubecl-stft"))]
+            {
+                use burn::backend::Wgpu;
+                println!("Backend: WGPU (GPU)");
+                run_backend::<Wgpu>(args, device, false, |chunks, dev| {
+                    batch_mel_spectrograms::<Wgpu>(chunks, 400, 160, 80, dev)
+                })
+            }
         }
-    }
-
-    #[cfg(not(feature = "gpu"))]
-    {
-        println!("Backend: Flex (CPU) - GPU not available");
-        let device = FlexDevice;
-        run_backend::<Flex<f32>>(args, device, |chunks, dev| {
-            batch_mel_spectrograms::<Flex<f32>>(chunks, 400, 160, 80, dev)
-        })
     }
 }

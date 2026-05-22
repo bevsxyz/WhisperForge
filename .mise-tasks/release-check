@@ -41,5 +41,11 @@ BIN_VER=$("$BIN" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
     exit 1
 } || true
 
+# --device cuda → must exit nonzero (feature not compiled in by default)
+"$BIN" transcribe -a /dev/null -m no_model --device cuda && {
+    echo "FAIL: --device cuda was accepted without the cuda feature (expected nonzero exit)"
+    exit 1
+} || true
+
 echo ""
 echo "=== Release check PASSED ==="
