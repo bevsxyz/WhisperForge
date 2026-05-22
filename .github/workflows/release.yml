@@ -3,7 +3,13 @@ name: Release
 on:
   push:
     tags:
+      # Bare workspace tag (e.g. v0.4.0). Push manually after `cargo release`
+      # until cargo-release is configured to emit one.
       - "v*"
+      # Per-crate tag the cargo-release `whisperforge-v*` scheme emits for the
+      # binary crate. Match this so a future `cargo release` triggers the
+      # binary build without needing a separate `v*` push.
+      - "whisperforge-v*"
 
 permissions:
   contents: write
