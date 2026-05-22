@@ -8139,22 +8139,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "whisperforge-align"
-version = "0.3.2"
-dependencies = [
- "anyhow",
- "burn",
- "burn-flex",
- "earshot",
- "rubato",
- "serde",
- "thiserror 1.0.69",
- "tokenizers 0.20.4",
- "whisperforge-core",
-]
-
-[[package]]
-name = "whisperforge-cli"
+name = "whisperforge"
 version = "0.3.2"
 dependencies = [
  "anyhow",
@@ -8168,6 +8153,21 @@ dependencies = [
  "whisperforge-align",
  "whisperforge-core",
  "whisperforge-diarize",
+]
+
+[[package]]
+name = "whisperforge-align"
+version = "0.3.2"
+dependencies = [
+ "anyhow",
+ "burn",
+ "burn-flex",
+ "earshot",
+ "rubato",
+ "serde",
+ "thiserror 1.0.69",
+ "tokenizers 0.20.4",
+ "whisperforge-core",
 ]
 
 [[package]]

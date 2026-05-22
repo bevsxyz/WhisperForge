@@ -3,7 +3,7 @@ members = [
     "whisperforge-core",
     "whisperforge-align",
     "whisperforge-diarize",
-    "whisperforge-cli",
+    "whisperforge",
     "whisperforge-convert",
 ]
 resolver = "2"

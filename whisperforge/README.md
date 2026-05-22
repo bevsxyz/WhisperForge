@@ -1,11 +1,11 @@
-# whisperforge-cli
+# whisperforge
 
 Fast GPU-accelerated speech-to-text CLI with streaming, quantization, speaker diarization, and multilingual support.
 
 ## Quick Links
 
 - **Full Documentation**: [WhisperForge Repository](https://github.com/bevsxyz/WhisperForge)
-- **Installation**: `cargo install whisperforge-cli`
+- **Installation**: `cargo install whisperforge`
 - **Usage Guide**: [CLI Reference](https://github.com/bevsxyz/WhisperForge#cli-reference)
 
 ## Quick Start

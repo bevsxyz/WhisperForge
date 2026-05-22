@@ -6,7 +6,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/bevsxyz/WhisperForge?label=version)](https://github.com/bevsxyz/WhisperForge/releases)
 
 [![whisperforge-core on crates.io](https://img.shields.io/crates/v/whisperforge-core.svg)](https://crates.io/crates/whisperforge-core)
-[![whisperforge-cli on crates.io](https://img.shields.io/crates/v/whisperforge-cli.svg)](https://crates.io/crates/whisperforge-cli)
+[![whisperforge on crates.io](https://img.shields.io/crates/v/whisperforge.svg)](https://crates.io/crates/whisperforge)
 [![whisperforge-align on crates.io](https://img.shields.io/crates/v/whisperforge-align.svg)](https://crates.io/crates/whisperforge-align)
 
 A high-performance Rust implementation of OpenAI's Whisper speech-to-text model with GPU acceleration via WGPU (Vulkan/DX12/Metal). Features SOTA decoding algorithms, per-token timestamps, and speaker diarization.
@@ -21,7 +21,7 @@ A high-performance Rust implementation of OpenAI's Whisper speech-to-text model 
 - Speaker diarization with `SPEAKER_NN` labels in SRT/JSON output
 - GPU acceleration via WGPU — works on any Vulkan, DX12, or Metal device (no CUDA required)
 - Voice activity detection — silence segments skipped automatically
-- Two binary aliases: `whisperforge` and `wf`
+- Single `wf` binary
 
 ## Project Status
 
@@ -44,16 +44,16 @@ A high-performance Rust implementation of OpenAI's Whisper speech-to-text model 
 
 ### CLI Binary
 
-**[📦 Install from crates.io](https://crates.io/crates/whisperforge-cli)** — One command:
+**[📦 Install from crates.io](https://crates.io/crates/whisperforge)** — One command:
 ```bash
-cargo install whisperforge-cli
+cargo install whisperforge
 wf --help
 ```
 
 **[🔨 Build from source](https://github.com/bevsxyz/WhisperForge)** — For development:
 ```bash
 git clone https://github.com/bevsxyz/WhisperForge
-cargo install --path ./whisperforge-cli
+cargo install --path ./whisperforge
 ```
 
 ### Library: Add to Your Project
@@ -113,7 +113,7 @@ wf -a audio.wav --output-format json
 cargo check --all
 
 # Tests (always use --release; exclude whisperforge-align — known pre-existing failures)
-cargo test --release -p whisperforge-core -p whisperforge-convert -p whisperforge-cli
+cargo test --release -p whisperforge-core -p whisperforge-convert -p whisperforge
 
 # Format + lint
 cargo fmt --all && cargo clippy --all-targets --all-features
@@ -162,7 +162,7 @@ Both the CLI and library load models from `models/`. When embedding the library,
 
 ## CLI Reference
 
-`whisperforge` / `wf` — GPU-accelerated Whisper transcription from the command line.
+`wf` — GPU-accelerated Whisper transcription from the command line.
 
 ```
 wf [OPTIONS]
@@ -199,7 +199,7 @@ Five-crate workspace built on **Burn 0.21** (Rust 2024 edition, requires **Rust 
 | Crate | Role |
 |-------|------|
 | [`whisperforge-core`](https://crates.io/crates/whisperforge-core) | Whisper model, audio pipeline, KV-cached decoding |
-| [`whisperforge-cli`](https://crates.io/crates/whisperforge-cli) | `whisperforge` / `wf` binary |
+| [`whisperforge`](https://crates.io/crates/whisperforge) | `wf` binary |
 | [`whisperforge-convert`](https://crates.io/crates/whisperforge-convert) | HuggingFace safetensors → Burn NamedMpk conversion |
 | [`whisperforge-align`](https://crates.io/crates/whisperforge-align) | VAD, segmentation, `BatchedTranscriber`, SRT output |
 | [`whisperforge-diarize`](https://crates.io/crates/whisperforge-diarize) | Speaker embedding clustering, `SPEAKER_NN` label assignment |

@@ -1,5 +1,5 @@
 [package]
-name = "whisperforge-cli"
+name = "whisperforge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,10 +11,7 @@ description = "Fast GPU-accelerated speech-to-text CLI with streaming, quantizat
 keywords = ["whisper", "speech-to-text", "transcription", "gpu", "wgpu"]
 categories = ["command-line-utilities", "multimedia::audio"]
 readme = "README.md"
-
-[[bin]]
-name = "whisperforge"
-path = "src/main.rs"
+autobins = false
 
 [[bin]]
 name = "wf"

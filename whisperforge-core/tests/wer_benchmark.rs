@@ -84,7 +84,7 @@ fn word_error_rate(hypothesis: &str, reference: &str) -> f32 {
 
 /// Run the full tiny_en pipeline on one WAV file and return the transcript.
 ///
-/// Mirrors the CLI logic in whisperforge-cli/src/main.rs exactly so that
+/// Mirrors the CLI logic in whisperforge/src/main.rs exactly so that
 /// benchmark results reflect the shipped decoding path.
 fn transcribe(
     model: &Whisper<Backend>,

@@ -9,7 +9,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 cargo check --all
 
 # Tests — ALWAYS use --release and exclude whisperforge-align (has known pre-existing failures)
-cargo test --release -p whisperforge-core -p whisperforge-convert -p whisperforge-cli
+cargo test --release -p whisperforge-core -p whisperforge-convert -p whisperforge
 
 # Single test with output
 cargo test --release -p whisperforge-core load::tests::test_load_whisper_model -- --nocapture --exact
@@ -24,7 +24,7 @@ mise run setup
 cargo release patch   # or minor / major
 
 # Run the CLI
-cargo run --release -p whisperforge-cli -- -a audio.wav -m tiny_en_converted
+cargo run --release -p whisperforge -- -a audio.wav -m tiny_en_converted
 ```
 
 ## Commit Message Convention
@@ -58,7 +58,7 @@ Five-crate Rust workspace using [Burn 0.21](https://burn.dev/) for GPU-accelerat
 | Crate | Role |
 |-------|------|
 | `whisperforge-core` | Whisper model + decoding — primary development area |
-| `whisperforge-cli` | `whisperforge` binary |
+| `whisperforge` | `wf` binary (transcription + model conversion subcommand, post-Phase E merger) |
 | `whisperforge-convert` | One-shot HuggingFace safetensors → Burn NamedMpk conversion |
 | `whisperforge-align` | VAD, segmentation, SRT output (has known test failures; work cautiously) |
 | `whisperforge-diarize` | Speaker diarization (Option A shipped; Option B deferred) |
@@ -101,7 +101,7 @@ Key files in `whisperforge-core/src/`:
 - **Symphonia over hound**: handles format dispatch automatically; hound silently clips integer WAV.
 - **Stale artifacts**: run `cargo clean` before concluding a crate is broken after a toolchain change.
 - **Burn 0.21**: `.squeeze()` takes no arguments; use `NamedMpkFileRecorder::<FullPrecisionSettings>::new()`; `PaddingConfig1d::Explicit` takes two args: `Explicit(left, right)` — symmetric padding is `Explicit(1, 1)` not `Explicit(1)`.
-- **Windows wgpu incompatibility**: wgpu-hal 29.0.3 depends on `windows` 0.61.3 but gpu-allocator 0.28.0 pulls in 0.62.2, causing version conflict on Windows. Fix: use target-specific dependencies in whisperforge-cli to disable wgpu feature on Windows (CPU fallback). TODO: Remove when Burn/wgpu update resolves this.
+- **Windows wgpu incompatibility**: wgpu-hal 29.0.3 depends on `windows` 0.61.3 but gpu-allocator 0.28.0 pulls in 0.62.2, causing version conflict on Windows. Fix: use target-specific dependencies in the `whisperforge` crate to disable wgpu feature on Windows (CPU fallback). TODO: Remove when Burn/wgpu update resolves this.
 
 ## Roadmap
 

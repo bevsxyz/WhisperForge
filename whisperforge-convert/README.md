@@ -47,6 +47,6 @@ For full details, see the [Model Files guide](https://github.com/bevsxyz/Whisper
 ## See Also
 
 - [`whisperforge-core`](https://crates.io/crates/whisperforge-core) — Library
-- [`whisperforge-cli`](https://crates.io/crates/whisperforge-cli) — CLI binary
+- [`whisperforge`](https://crates.io/crates/whisperforge) — CLI binary (`wf`)
 - [`whisperforge-align`](https://crates.io/crates/whisperforge-align) — VAD & SRT
 - [`whisperforge-diarize`](https://crates.io/crates/whisperforge-diarize) — Speaker diarization

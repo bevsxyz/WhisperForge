@@ -59,17 +59,16 @@ jobs:
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             # Windows: disable gpu feature due to wgpu/windows crate version conflict (0.61.3 vs 0.62.2)
-            cargo build --release --locked --target ${{ matrix.target }} -p whisperforge-cli --no-default-features
+            cargo build --release --locked --target ${{ matrix.target }} -p whisperforge --no-default-features
           else
             # Linux/macOS: enable gpu feature
-            cargo build --release --locked --target ${{ matrix.target }} -p whisperforge-cli --features gpu
+            cargo build --release --locked --target ${{ matrix.target }} -p whisperforge --features gpu
           fi
         shell: bash
 
       - name: Strip binaries (Linux / macOS)
         if: matrix.os != 'windows-latest'
         run: |
-          strip target/${{ matrix.target }}/release/whisperforge
           strip target/${{ matrix.target }}/release/wf
 
       - name: Package (Linux / macOS)
@@ -77,15 +76,14 @@ jobs:
         run: |
           tar czf ${{ matrix.asset_name }} \
             -C target/${{ matrix.target }}/release \
-            whisperforge wf
+            wf
 
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           Compress-Archive `
-            -Path "target/${{ matrix.target }}/release/whisperforge.exe", `
-                  "target/${{ matrix.target }}/release/wf.exe" `
+            -Path "target/${{ matrix.target }}/release/wf.exe" `
             -DestinationPath "${{ matrix.asset_name }}"
 
       - name: Upload artifact
