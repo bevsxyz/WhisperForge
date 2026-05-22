@@ -36,16 +36,6 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "eval \"$(mise activate bash)\"",
-            "async": true
-          }
-        ]
-      },
-      {
         "matcher": "Edit|Write",
         "hooks": [
           {
