@@ -40,4 +40,8 @@ Thumbs.db
 
 # Auto-generated repo map (derived artifact)
 CODEINDEX.md
+whisperforge/CHANGELOG.md
 whisperforge-*/CHANGELOG.md
+
+# Claude harness runtime artifacts
+.claude/scheduled_tasks.lock
