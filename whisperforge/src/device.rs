@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use clap::ValueEnum;
 
 /// User-facing device selection. Always exposes the full set so the error
@@ -21,21 +21,27 @@ pub enum ResolvedDevice {
     Cpu,
     #[cfg(feature = "gpu")]
     Wgpu,
+    #[cfg(feature = "cuda")]
+    Cuda,
 }
 
 /// Map a `DeviceChoice` to a `ResolvedDevice`, erroring with a rebuild hint
 /// when the requested backend was not compiled in.
 ///
-/// `Auto` prefers WGPU when the `gpu` feature is available, otherwise CPU.
-/// Real adapter probing (with Windows fallback) lands in a later phase E commit.
+/// `Auto` prefers CUDA when compiled in, then WGPU, then CPU. Real adapter
+/// probing (with Windows fallback) lands in a later phase E commit.
 pub fn resolve(choice: DeviceChoice) -> Result<ResolvedDevice> {
     match choice {
         DeviceChoice::Auto => {
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "cuda")]
+            {
+                Ok(ResolvedDevice::Cuda)
+            }
+            #[cfg(all(not(feature = "cuda"), feature = "gpu"))]
             {
                 Ok(ResolvedDevice::Wgpu)
             }
-            #[cfg(not(feature = "gpu"))]
+            #[cfg(all(not(feature = "cuda"), not(feature = "gpu")))]
             {
                 Ok(ResolvedDevice::Cpu)
             }
@@ -48,13 +54,22 @@ pub fn resolve(choice: DeviceChoice) -> Result<ResolvedDevice> {
             }
             #[cfg(not(feature = "gpu"))]
             {
-                Err(anyhow!(
+                Err(anyhow::anyhow!(
                     "WGPU backend not compiled in. Rebuild with the default features or `--features gpu`."
                 ))
             }
         }
-        DeviceChoice::Cuda => Err(anyhow!(
-            "CUDA backend not enabled. Rebuild with `--features cuda`."
-        )),
+        DeviceChoice::Cuda => {
+            #[cfg(feature = "cuda")]
+            {
+                Ok(ResolvedDevice::Cuda)
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                Err(anyhow::anyhow!(
+                    "CUDA backend not enabled. Rebuild with `--features cuda`."
+                ))
+            }
+        }
     }
 }

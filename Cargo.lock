@@ -8109,6 +8109,7 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "burn",
+ "burn-cuda",
  "burn-flex",
  "burn-wgpu",
  "clap",

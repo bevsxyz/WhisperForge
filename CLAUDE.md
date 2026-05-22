@@ -31,9 +31,15 @@ cargo run --release -p whisperforge -- convert --model-id openai/whisper-tiny.en
 
 # List converted models under ./models (override with --models-dir or WF_MODELS_DIR)
 cargo run --release -p whisperforge -- list-models
+
+# Build with native CUDA (requires CUDA toolkit + nvcc on host)
+cargo build --release -p whisperforge --features cuda
+wf transcribe -a audio.wav -m tiny_en_converted --device cuda
 ```
 
 `wf transcribe` and `wf list-models` honor `WF_MODELS_DIR` (default `./models/`). `--models-dir <PATH>` on either subcommand overrides the env var.
+
+`wf transcribe --device <auto|cpu|wgpu|cuda>` picks the backend at runtime. `auto` prefers CUDA (when built with `--features cuda`), then WGPU (when built with the default `gpu` feature), then CPU.
 
 ## Commit Message Convention
 

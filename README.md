@@ -100,6 +100,10 @@ wf transcribe -a audio.wav -m tiny_en_converted --output-format srt --diarize -o
 
 # JSON output
 wf transcribe -a audio.wav --output-format json
+
+# Native CUDA backend (requires CUDA toolkit on the host at build time)
+cargo install whisperforge --features cuda
+wf transcribe -a audio.wav -m tiny_en_converted --device cuda
 ```
 
 ### For Contributors

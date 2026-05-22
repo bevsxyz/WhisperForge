@@ -531,5 +531,15 @@ pub fn run(args: TranscribeArgs) -> Result<()> {
                 })
             }
         }
+        #[cfg(feature = "cuda")]
+        ResolvedDevice::Cuda => {
+            use burn_cuda::{Cuda, CudaDevice};
+            type B = Cuda<f32, i32>;
+            println!("Backend: CUDA (CubeCL)");
+            let device = CudaDevice::default();
+            run_backend::<B>(args, device, false, |chunks, dev| {
+                batch_mel_spectrograms::<B>(chunks, 400, 160, 80, dev)
+            })
+        }
     }
 }
