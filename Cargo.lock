@@ -8105,7 +8105,7 @@ dependencies = [
 
 [[package]]
 name = "whisperforge"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "burn",
@@ -8127,7 +8127,7 @@ dependencies = [
 
 [[package]]
 name = "whisperforge-align"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "burn",
@@ -8142,7 +8142,7 @@ dependencies = [
 
 [[package]]
 name = "whisperforge-core"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "audioadapter-buffers",
@@ -8162,7 +8162,7 @@ dependencies = [
 
 [[package]]
 name = "whisperforge-diarize"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
 ]

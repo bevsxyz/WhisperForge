@@ -21,4 +21,4 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 rubato = { workspace = true }
 tokenizers = { workspace = true }
-whisperforge-core = { path = "../whisperforge-core", version = "0.3" }
+whisperforge-core = { path = "../whisperforge-core", version = "0.4" }
