@@ -5,9 +5,7 @@ use anyhow::{Context, Result};
 use burn::{
     module::{Module, ModuleMapper, Param},
     record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder},
-    tensor::{
-        DType, Tensor, backend::Backend, ops::QuantizedTensor, quantization::QTensorPrimitive,
-    },
+    tensor::{Tensor, backend::Backend},
 };
 use burn_flex::{Flex, FlexDevice};
 use serde::Deserialize;
@@ -97,10 +95,8 @@ impl<B: Backend> ModuleMapper<B> for Dequantizer {
 /// and re-serialize to in-memory bytes. The returned bytes are a plain FP32 NamedMpk
 /// that any backend can load without needing INT8 kernel support.
 ///
-/// Used as a fallback by [`load_whisper_from_bytes`] when the target backend reports
-/// no native QFloat support (e.g. WGPU/WGSL, which has no i8 element type). Backends
-/// that *do* support QFloat (e.g. burn-cuda) skip this indirection and load the
-/// quantized weights directly.
+/// WGPU/WGSL has no i8 element type, so this indirection is required for quantized models
+/// on the GPU path. Only called when the .cfg reports `precision: int8`.
 fn dequantize_weights_to_fp32(config: &WhisperConfig, bytes: Vec<u8>) -> Result<Vec<u8>> {
     type Cpu = Flex<f32>;
     let device = FlexDevice;
@@ -123,10 +119,8 @@ fn dequantize_weights_to_fp32(config: &WhisperConfig, bytes: Vec<u8>) -> Result<
 /// `weights` is the raw contents of a `.mpk` file.
 /// `precision` is the optional precision from the `.cfg` sidecar; pass `None` when unknown.
 ///
-/// INT8-quantized models are loaded natively on backends that report QFloat support
-/// (e.g. burn-cuda → routes quantized matmul through cubecl's INT8 kernels). On
-/// backends that don't (WGPU has no INT8 element type in WGSL), the bytes are
-/// transparently dequantized to FP32 on the CPU first.
+/// INT8-quantized models are transparently dequantized on the CPU before being loaded
+/// onto `device`, so this works on backends (e.g. WGPU) that have no INT8 kernel support.
 pub fn load_whisper_from_bytes<B: Backend>(
     config: &WhisperConfig,
     weights: Vec<u8>,
@@ -134,16 +128,7 @@ pub fn load_whisper_from_bytes<B: Backend>(
     device: &B::Device,
 ) -> Result<Whisper<B>> {
     let weights = match precision {
-        Some(ModelPrecision::Int8) => {
-            let scheme = <QuantizedTensor<B> as QTensorPrimitive>::default_scheme();
-            if B::supports_dtype(device, DType::QFloat(scheme)) {
-                println!("INT8 model: backend reports QFloat support, loading natively");
-                weights
-            } else {
-                println!("INT8 model: backend has no QFloat support, dequantizing to FP32 first");
-                dequantize_weights_to_fp32(config, weights)?
-            }
-        }
+        Some(ModelPrecision::Int8) => dequantize_weights_to_fp32(config, weights)?,
         _ => weights,
     };
     let model = config.init::<B>(device);

@@ -136,7 +136,7 @@ INT8 post-training quantization (~4× size reduction: 150 MB → 37 MB). Lives i
 - `--quantize int8` flag on `wforge convert` (uses `Module::quantize_weights`)
 - `Precision` enum (Fp32/Int8) in convert pipeline; metadata recorded in `.cfg` sidecar
 - Load path unchanged — recorder transparently handles quantized DType
-- **INT8 inference is backend-gated**: `load.rs::load_whisper_from_bytes` checks `B::supports_dtype(device, DType::QFloat(default_scheme))` before deciding whether to dequant. Backends that report QFloat support — burn-cuda, where cubecl-cuda routes quantized matmul through native PTX kernels — load the INT8 weights directly and run quantized math at inference time. Backends that don't (burn-wgpu has no i8 element type in WGSL; NdArray CPU has a Burn 0.21 quantized-*conversion* unwrap panic) fall through to `dequantize_weights_to_fp32`: load on `Flex<f32>` CPU, run `Dequantizer` mapper, re-serialize to FP32 bytes, then load on the target. The 38 MB file stays at INT8 in CUDA VRAM but expands to ~150 MB FP32 in RAM on the fallback path. Only triggers when `.cfg` reports `precision: int8`.
+- **Known limitation**: NdArray CPU backend has Burn 0.21 quantization bug (unwrap panic during quantized *conversion*). WGPU/WGSL has no INT8 element type, so Burn cannot place QFloat tensors on a WGPU device. Fix (in `load.rs`): INT8 models are transparently loaded on `Flex<f32>` CPU first, dequantized via `Dequantizer` mapper, re-serialized to FP32 bytes, then loaded on the target backend. Only triggers when `.cfg` reports `precision: int8`. The 38 MB file expands to ~150 MB in RAM; disk size advantage is preserved.
 
 ### Phase D — WASM Target ⏸ DEFERRED
 
