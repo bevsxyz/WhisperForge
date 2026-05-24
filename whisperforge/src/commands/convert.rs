@@ -17,7 +17,7 @@ use burn::{
 use burn_flex::Flex;
 use burn_flex::FlexDevice;
 use clap::{Parser, ValueEnum};
-use hf_hub::{Repo, RepoType, api::tokio::Api};
+use hf_hub::{Repo, RepoType, api::tokio::ApiBuilder};
 use safetensors::SafeTensors;
 use whisperforge_core::model::{AudioEncoder, TextDecoder};
 use whisperforge_core::{Whisper, WhisperConfig};
@@ -103,7 +103,9 @@ async fn run_async(args: ConvertArgs) -> Result<()> {
         std::path::PathBuf::from(local_path)
     } else {
         println!("Downloading from HuggingFace: {}", args.model_id);
-        let api = Api::new().context("initialising HuggingFace API")?;
+        let api = ApiBuilder::from_env()
+            .build()
+            .context("initialising HuggingFace API")?;
         let repo = api.repo(Repo::new(args.model_id.clone(), RepoType::Model));
 
         let tok_cache = repo

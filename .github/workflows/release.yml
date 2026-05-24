@@ -62,14 +62,7 @@ jobs:
             ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build release binary
-        run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            # Windows: disable gpu feature due to wgpu/windows crate version conflict (0.61.3 vs 0.62.2)
-            cargo build --release --locked --target ${{ matrix.target }} -p whisperforge --no-default-features
-          else
-            # Linux/macOS: enable gpu feature
-            cargo build --release --locked --target ${{ matrix.target }} -p whisperforge --features gpu
-          fi
+        run: cargo build --release --locked --target ${{ matrix.target }} -p whisperforge --features gpu
         shell: bash
 
       - name: Strip binaries (Linux / macOS)

@@ -33,7 +33,7 @@ burn-wgpu = { version = "0.21.0", optional = true }
 burn-cuda = { version = "0.21.0", optional = true }
 # Model conversion (`wf convert`) deps.
 safetensors = "0.4.2"
-hf-hub = { version = "0.3.2", features = ["tokio"] }
+hf-hub = { version = "0.5", features = ["tokio"] }
 tokio = { version = "1.36.0", features = ["full"] }
 half = "2.3.1"
 
@@ -42,7 +42,3 @@ cubecl-stft = ["dep:burn-wgpu", "whisperforge-core/cubecl-stft"]
 gpu = ["burn/wgpu"]
 cuda = ["dep:burn-cuda"]
 default = ["gpu"]
-# Windows builds: CI passes `--no-default-features` because the wgpu-hal /
-# gpu-allocator transitive `windows` crate version conflict can't be resolved
-# inside this crate (see CLAUDE.md § Hard-won lessons). When upstream lands a
-# matching `windows` version, drop the carve-out from .github/workflows/release.yml.
