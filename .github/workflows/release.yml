@@ -65,24 +65,45 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }} -p whisperforge --features gpu
         shell: bash
 
-      - name: Strip binaries (Linux / macOS)
+      - name: Strip binary (Linux / macOS)
         if: matrix.os != 'windows-latest'
         run: |
-          strip target/${{ matrix.target }}/release/wf
+          strip target/${{ matrix.target }}/release/wforge
+
+      - name: Create wf alias shim (Linux / macOS)
+        if: matrix.os != 'windows-latest'
+        # `wforge` is the canonical binary; `wf` is a tiny shell shim for
+        # users who prefer the short name. Bundled in the release tarball.
+        run: |
+          cat > target/${{ matrix.target }}/release/wf <<'EOF'
+          #!/bin/sh
+          exec "$(dirname "$0")/wforge" "$@"
+          EOF
+          chmod +x target/${{ matrix.target }}/release/wf
 
       - name: Package (Linux / macOS)
         if: matrix.os != 'windows-latest'
         run: |
           tar czf ${{ matrix.asset_name }} \
             -C target/${{ matrix.target }}/release \
-            wf
+            wforge wf
+
+      - name: Create wf alias shim (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        # `wforge` is the canonical binary; `wf` is a batch shim for users who
+        # prefer the short name (avoids the Windows Firewall `wf` collision by
+        # making the explicit name the default).
+        run: |
+          Set-Content -Path "target/${{ matrix.target }}/release/wf.cmd" `
+            -Value '@"%~dp0wforge.exe" %*' -Encoding ascii
 
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           Compress-Archive `
-            -Path "target/${{ matrix.target }}/release/wf.exe" `
+            -Path "target/${{ matrix.target }}/release/wforge.exe","target/${{ matrix.target }}/release/wf.cmd" `
             -DestinationPath "${{ matrix.asset_name }}"
 
       - name: Upload artifact

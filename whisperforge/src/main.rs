@@ -6,7 +6,7 @@ mod device;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "wf",
+    name = "wforge",
     version,
     about = "A fast Whisper transcription tool in Rust"
 )]

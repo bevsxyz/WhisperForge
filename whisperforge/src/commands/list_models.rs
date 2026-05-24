@@ -84,7 +84,7 @@ pub fn run(args: ListModelsArgs) -> Result<()> {
 
     if rows.is_empty() {
         println!(
-            "No models found in '{}'. Convert one with `wf convert --output {}/<name>`.",
+            "No models found in '{}'. Convert one with `wforge convert --output {}/<name>`.",
             dir.display(),
             dir.display(),
         );

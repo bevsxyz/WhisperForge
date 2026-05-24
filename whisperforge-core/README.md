@@ -32,7 +32,7 @@ println!("{}", transcript);
 
 ## See Also
 
-- [`whisperforge`](https://crates.io/crates/whisperforge) — Command-line binary (`wf`) including `wf convert` for HuggingFace model conversion
+- [`whisperforge`](https://crates.io/crates/whisperforge) — Command-line binary (`wforge`) including `wforge convert` for HuggingFace model conversion
 - [`whisperforge-align`](https://crates.io/crates/whisperforge-align) — VAD & SRT output
 - [`whisperforge-diarize`](https://crates.io/crates/whisperforge-diarize) — Speaker diarization
 

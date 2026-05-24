@@ -34,12 +34,12 @@ cargo run --release -p whisperforge -- list-models
 
 # Build with native CUDA (requires CUDA toolkit + nvcc on host)
 cargo build --release -p whisperforge --features cuda
-wf transcribe -a audio.wav -m tiny_en_converted --device cuda
+wforge transcribe -a audio.wav -m tiny_en_converted --device cuda
 ```
 
-`wf transcribe` and `wf list-models` honor `WF_MODELS_DIR` (default `./models/`). `--models-dir <PATH>` on either subcommand overrides the env var.
+`wforge transcribe` and `wforge list-models` honor `WF_MODELS_DIR` (default `./models/`). `--models-dir <PATH>` on either subcommand overrides the env var.
 
-`wf transcribe --device <auto|cpu|wgpu|cuda>` picks the backend at runtime. `auto` prefers CUDA (when built with `--features cuda`), then WGPU (when built with the default `gpu` feature), then CPU.
+`wforge transcribe --device <auto|cpu|wgpu|cuda>` picks the backend at runtime. `auto` prefers CUDA (when built with `--features cuda`), then WGPU (when built with the default `gpu` feature), then CPU.
 
 ## Commit Message Convention
 
@@ -63,7 +63,7 @@ ci: disable wgpu on windows
 
 The `commit-msg` hook validates this; non-conforming commits are blocked. `git-cliff` auto-generates CHANGELOG from commits using this format.
 
-Model files (`.mpk`, `.cfg`, tokenizer) are git-ignored. Download from HuggingFace and convert with `wf convert`.
+Model files (`.mpk`, `.cfg`, tokenizer) are git-ignored. Download from HuggingFace and convert with `wforge convert`.
 
 ## Architecture
 
@@ -72,7 +72,7 @@ Four-crate Rust workspace using [Burn 0.21](https://burn.dev/) for GPU-accelerat
 | Crate | Role |
 |-------|------|
 | `whisperforge-core` | Whisper model + decoding — primary development area |
-| `whisperforge` | `wf` binary; hosts `wf transcribe` and `wf convert` subcommands (post-Phase E merger) |
+| `whisperforge` | `wforge` binary; hosts `wforge transcribe` and `wforge convert` subcommands (post-Phase E merger) |
 | `whisperforge-align` | VAD, segmentation, SRT output (has known test failures; work cautiously) |
 | `whisperforge-diarize` | Speaker diarization (Option A shipped; Option B deferred) |
 
@@ -133,7 +133,7 @@ Phases 1–7 + A–B + B.5 + C + E complete. Phase D (WASM) deferred. **Next: Ph
 ### Phase C — Quantization ✅ COMPLETE
 
 INT8 post-training quantization (~4× size reduction: 150 MB → 37 MB). Lives in `whisperforge::commands::convert` post-Phase E merger.
-- `--quantize int8` flag on `wf convert` (uses `Module::quantize_weights`)
+- `--quantize int8` flag on `wforge convert` (uses `Module::quantize_weights`)
 - `Precision` enum (Fp32/Int8) in convert pipeline; metadata recorded in `.cfg` sidecar
 - Load path unchanged — recorder transparently handles quantized DType
 - **Known limitation**: NdArray CPU backend has Burn 0.21 quantization bug (unwrap panic during quantized *conversion*). WGPU/WGSL has no INT8 element type, so Burn cannot place QFloat tensors on a WGPU device. Fix (in `load.rs`): INT8 models are transparently loaded on `Flex<f32>` CPU first, dequantized via `Dequantizer` mapper, re-serialized to FP32 bytes, then loaded on the target backend. Only triggers when `.cfg` reports `precision: int8`. The 38 MB file expands to ~150 MB in RAM; disk size advantage is preserved.
@@ -146,9 +146,9 @@ Rolled back after C++ transitive deps blocked the JS-tokenizer path. Re-evaluati
 
 Goal was to clean the crate / CLI surface before streaming work. Targets 0.4.0 (breaking).
 
-- ✅ `whisperforge-cli` → `whisperforge` (single `wf` binary, `autobins = false`)
-- ✅ `whisperforge-convert` folded into `wf convert` (workspace shrunk 5 → 4 crates)
-- ✅ `wf list-models` + `WF_MODELS_DIR` / `--models-dir` honored by `transcribe` and `list-models`
+- ✅ `whisperforge-cli` → `whisperforge` (single `wforge` binary, `autobins = false`)
+- ✅ `whisperforge-convert` folded into `wforge convert` (workspace shrunk 5 → 4 crates)
+- ✅ `wforge list-models` + `WF_MODELS_DIR` / `--models-dir` honored by `transcribe` and `list-models`
 - ✅ Friendly model-not-found error pointing at `list-models` / `convert`
 - ✅ `--task translate` removed (was parsed-then-runtime-errored)
 - ✅ `--cpu` removed; replaced with `--device <auto|cpu|wgpu|cuda>` defaulting to `auto`

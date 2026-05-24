@@ -1,7 +1,7 @@
 // Convert OpenAI Whisper safetensors to Burn .mpk format.
 //
 // Merged from the former `whisperforge-convert` crate. Exposes the
-// `wf convert` subcommand plus the underlying conversion + inspection helpers.
+// `wforge convert` subcommand plus the underlying conversion + inspection helpers.
 
 use std::collections::HashMap;
 use std::path::Path;

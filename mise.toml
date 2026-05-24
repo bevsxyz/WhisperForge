@@ -36,7 +36,7 @@ echo "done"
 
 [tasks.demo]
 description="manually test the output"
-run="cargo run -p whisperforge --bin wf -- --audio-file test_data/LJ001-0003.wav --diarize --output-format srt"
+run="cargo run -p whisperforge --bin wforge -- --audio-file test_data/LJ001-0003.wav --diarize --output-format srt"
 
 [tasks.release]
 description="Bump version and release via cargo-release"

@@ -214,7 +214,7 @@ fn run_backend<B: Backend>(
     let mpk_path = base.with_extension("mpk");
     if !mpk_path.exists() {
         anyhow::bail!(
-            "model '{name}' not found in {dir}. Run `wf list-models` to see available models, or `wf convert --model-id openai/whisper-{name} --output {dir}/{name}` to fetch and convert it.",
+            "model '{name}' not found in {dir}. Run `wforge list-models` to see available models, or `wforge convert --model-id openai/whisper-{name} --output {dir}/{name}` to fetch and convert it.",
             name = args.model,
             dir = models_dir.display(),
         );

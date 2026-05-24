@@ -25,7 +25,7 @@ let config = WhisperConfig::tiny_en();
 let model = Model::load(Path::new("models/tiny_en_converted"))?;
 
 // With CLI: use --diarize flag
-// wf -a audio.wav -m tiny_en_converted --diarize
+// wforge transcribe -a audio.wav -m tiny_en_converted --diarize
 ```
 
 ## CLI Integration
@@ -33,7 +33,7 @@ let model = Model::load(Path::new("models/tiny_en_converted"))?;
 The CLI automatically applies diarization labels when using the `--diarize` flag:
 
 ```bash
-wf -a audio.wav -m tiny_en_converted --diarize --output-format srt -o output.srt
+wforge transcribe -a audio.wav -m tiny_en_converted --diarize --output-format srt -o output.srt
 ```
 
 Output includes speaker labels:
@@ -50,7 +50,7 @@ SPEAKER_1: I'm doing great, thanks for asking.
 ## See Also
 
 - [`whisperforge-core`](https://crates.io/crates/whisperforge-core) — Library
-- [`whisperforge`](https://crates.io/crates/whisperforge) — CLI binary (`wf`); `wf convert` ports HuggingFace safetensors
+- [`whisperforge`](https://crates.io/crates/whisperforge) — CLI binary (`wforge`); `wforge convert` ports HuggingFace safetensors
 - [`whisperforge-align`](https://crates.io/crates/whisperforge-align) — VAD & SRT
 
 For full documentation, visit the [WhisperForge repository](https://github.com/bevsxyz/WhisperForge).
