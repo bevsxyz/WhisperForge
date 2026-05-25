@@ -15,7 +15,6 @@ readme = "README.md"
 [dependencies]
 burn = { workspace = true, features = ["std", "burn-flex"] }
 burn-flex = { workspace = true }
-earshot = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
