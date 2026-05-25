@@ -2,7 +2,7 @@
 /// Implements faster-whisper's hybrid beam search + temperature fallback approach
 use anyhow::{Result, anyhow};
 use flate2::{Compression, write::GzEncoder};
-use rand::SeedableRng;
+use rand::{RngExt, SeedableRng};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::io::Write;
@@ -161,7 +161,7 @@ fn sample_from_logits(logits: &[f32], temp: f32, rng: &mut impl rand::Rng) -> u3
     let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let exps: Vec<f32> = logits.iter().map(|&l| ((l - max) / temp).exp()).collect();
     let sum: f32 = exps.iter().sum::<f32>().max(f32::EPSILON);
-    let threshold: f32 = rng.r#gen::<f32>() * sum;
+    let threshold: f32 = rng.random::<f32>() * sum;
     let mut cumsum = 0.0;
     for (i, &e) in exps.iter().enumerate() {
         cumsum += e;

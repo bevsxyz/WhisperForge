@@ -41,7 +41,7 @@ thiserror = "2.0"
 flate2 = "1.0"
 
 # RNG (for temperature sampling in decoding)
-rand = "0.8"
+rand = "0.10"
 
 # Development dependencies
 tempfile = "3.8"

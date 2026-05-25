@@ -8081,7 +8081,7 @@ dependencies = [
  "burn-wgpu",
  "cubecl",
  "flate2",
- "rand 0.8.6",
+ "rand 0.10.1",
  "rubato",
  "rustfft",
  "serde",
