@@ -22,7 +22,7 @@ burn = { version = "0.21.0", features = ["std", "burn-flex"] }
 burn-flex = "0.21.0"
 
 # Audio processing
-rubato = "1.0"
+rubato = "3.0"
 rustfft = "6.2"
 
 # Text processing

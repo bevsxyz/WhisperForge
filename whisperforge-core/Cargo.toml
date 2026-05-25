@@ -23,7 +23,7 @@ rand = { workspace = true }
 tokenizers = { workspace = true }
 rubato = { workspace = true }
 rustfft = { workspace = true }
-audioadapter-buffers = "2.0"
+audioadapter-buffers = "3.0"
 symphonia = { version = "0.5", optional = true, default-features = false, features = [
     "pcm", "wav", "flac", "vorbis", "ogg", "mkv",
     "mp3", "aac", "isomp4",
