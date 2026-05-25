@@ -38,7 +38,7 @@ clap = { version = "4.4", features = ["derive"] }
 
 # Error handling and utilities
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 
 # Compression (for decoding quality metrics)
 flate2 = "1.0"
