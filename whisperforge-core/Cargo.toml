@@ -30,6 +30,9 @@ symphonia = { version = "0.6", optional = true, default-features = false, featur
 ] }
 cubecl = { version = "0.10.0", optional = true }
 burn-wgpu = { version = "0.21.0", optional = true }
+cpal = { workspace = true }
+ringbuf = { workspace = true }
+tracing = { workspace = true }
 
 [features]
 default = ["file-io"]

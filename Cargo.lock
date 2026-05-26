@@ -8369,15 +8369,18 @@ dependencies = [
  "burn",
  "burn-flex",
  "burn-wgpu",
+ "cpal",
  "cubecl",
  "flate2",
  "rand 0.10.1",
+ "ringbuf",
  "rubato",
  "rustfft",
  "serde",
  "serde_json",
  "symphonia",
  "tokenizers 0.23.1",
+ "tracing",
 ]
 
 [[package]]

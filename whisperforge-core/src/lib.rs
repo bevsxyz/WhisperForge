@@ -3,6 +3,7 @@ use burn::tensor::{Tensor, backend::Backend};
 
 pub mod attn_extract;
 pub mod audio;
+pub mod audio_capture;
 pub mod decoding;
 pub mod embed;
 pub mod kv_cache;
@@ -18,6 +19,7 @@ pub mod stft_gpu;
 
 pub use attn_extract::forward_decoder_with_cross_attn;
 pub use audio::batch_mel_spectrograms;
+pub use audio_capture::{MicCapture, list_input_devices};
 pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
 pub use embed::extract_speaker_embedding;
 pub use kv_cache::{KvCache, forward_decoder_cached};
