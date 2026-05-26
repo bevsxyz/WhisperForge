@@ -14,13 +14,12 @@ use anyhow::{Result, anyhow};
 use audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, WindowFunction};
 use std::path::Path;
+use symphonia::core::codecs::audio::CODEC_ID_NULL_AUDIO;
 use symphonia::core::{
-    audio::SampleBuffer,
-    codecs::{CODEC_TYPE_NULL, DecoderOptions},
-    formats::{FormatOptions, FormatReader},
+    codecs::audio::AudioDecoderOptions,
+    formats::{FormatOptions, FormatReader, probe::Hint},
     io::MediaSourceStream,
     meta::MetadataOptions,
-    probe::Hint,
 };
 
 /// A decoded chunk of audio at 16 kHz mono.
@@ -40,7 +39,7 @@ pub struct AudioChunk {
 /// Yields chunks with automatic 1-second overlap for alignment across boundaries.
 pub struct AudioChunkIterator {
     reader: Box<dyn FormatReader>,
-    decoder: Box<dyn symphonia::core::codecs::Decoder>,
+    decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
     track_id: u32,
     sample_rate: u32,
     channels: u16,
@@ -59,7 +58,6 @@ pub struct AudioChunkIterator {
     // Position tracking
     samples_out: usize, // Total 16 kHz samples emitted so far
     done: bool,
-    sample_buffer: Option<SampleBuffer<f32>>,
 }
 
 impl AudioChunkIterator {
@@ -80,35 +78,44 @@ impl AudioChunkIterator {
             hint.with_extension(ext);
         }
 
-        let probed = symphonia::default::get_probe()
-            .format(
+        let format = symphonia::default::get_probe()
+            .probe(
                 &hint,
                 mss,
-                &FormatOptions::default(),
-                &MetadataOptions::default(),
+                FormatOptions::default(),
+                MetadataOptions::default(),
             )
             .map_err(|e| anyhow!("Unsupported audio format '{}': {}", path.display(), e))?;
-
-        let format = probed.format;
         let track = format
             .tracks()
             .iter()
-            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .find(|t| {
+                t.codec_params
+                    .as_ref()
+                    .and_then(|cp| cp.audio())
+                    .map(|ap| ap.codec != CODEC_ID_NULL_AUDIO)
+                    .unwrap_or(false)
+            })
             .ok_or_else(|| anyhow!("No audio tracks found in '{}'", path.display()))?;
 
         let track_id = track.id;
-        let sample_rate = track
+        let codec_params = track
             .codec_params
+            .as_ref()
+            .and_then(|cp| cp.audio())
+            .ok_or_else(|| anyhow!("Missing codec parameters in '{}'", path.display()))?;
+
+        let sample_rate = codec_params
             .sample_rate
             .ok_or_else(|| anyhow!("Unknown sample rate in '{}'", path.display()))?;
-        let channels = track
-            .codec_params
+        let channels = codec_params
             .channels
+            .as_ref()
             .ok_or_else(|| anyhow!("Unknown channel count in '{}'", path.display()))?
             .count() as u16;
 
         let decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &DecoderOptions::default())
+            .make_audio_decoder(codec_params, &AudioDecoderOptions::default())
             .map_err(|e| anyhow!("Failed to create decoder for '{}': {}", path.display(), e))?;
 
         let target_rate = 16000;
@@ -152,7 +159,6 @@ impl AudioChunkIterator {
             target_rate,
             samples_out: 0,
             done: false,
-            sample_buffer: None,
         })
     }
 
@@ -177,15 +183,12 @@ impl AudioChunkIterator {
             }
 
             let packet = match self.reader.next_packet() {
-                Ok(p) => p,
-                Err(symphonia::core::errors::Error::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
+                Ok(Some(p)) => p,
+                Ok(None) => {
                     self.done = true;
                     break;
                 }
                 Err(symphonia::core::errors::Error::ResetRequired) => {
-                    self.sample_buffer = None;
                     continue;
                 }
                 Err(e) => {
@@ -193,7 +196,7 @@ impl AudioChunkIterator {
                 }
             };
 
-            if packet.track_id() != self.track_id {
+            if packet.track_id != self.track_id {
                 continue;
             }
 
@@ -205,11 +208,8 @@ impl AudioChunkIterator {
                 }
             };
 
-            let buf = self.sample_buffer.get_or_insert_with(|| {
-                SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec())
-            });
-            buf.copy_interleaved_ref(decoded);
-            let packet_samples = buf.samples().to_vec();
+            let mut packet_samples = Vec::new();
+            decoded.copy_to_vec_interleaved::<f32>(&mut packet_samples);
 
             // Resample or copy samples
             if self.resampler.is_some() {
