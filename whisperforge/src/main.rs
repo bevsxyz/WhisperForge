@@ -23,6 +23,8 @@ enum Command {
     Convert(commands::convert::ConvertArgs),
     /// List converted models available under the models directory
     ListModels(commands::list_models::ListModelsArgs),
+    /// Stream realtime transcription from microphone input
+    Stream(commands::stream::StreamArgs),
 }
 
 fn main() -> Result<()> {
@@ -31,5 +33,6 @@ fn main() -> Result<()> {
         Command::Transcribe(args) => commands::transcribe::run(args),
         Command::Convert(args) => commands::convert::run(args),
         Command::ListModels(args) => commands::list_models::run(args),
+        Command::Stream(args) => commands::stream::run(args),
     }
 }

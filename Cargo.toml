@@ -24,6 +24,8 @@ burn-flex = "0.21.0"
 # Audio processing
 rubato = "3.0"
 rustfft = "6.2"
+cpal = "0.15"
+ringbuf = "0.4"
 
 # Text processing
 tokenizers = "0.23"
@@ -42,6 +44,14 @@ flate2 = "1.0"
 
 # RNG (for temperature sampling in decoding)
 rand = "0.10"
+
+# ONNX VAD inference
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic"] }
+
+# Terminal UI and logging
+crossterm = "0.28"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Development dependencies
 tempfile = "3.8"
