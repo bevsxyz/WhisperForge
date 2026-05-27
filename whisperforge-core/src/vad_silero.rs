@@ -3,7 +3,7 @@ use hf_hub::{Repo, RepoType, api::sync::ApiBuilder};
 use ort::{session::Session, value::TensorRef};
 use std::path::{Path, PathBuf};
 
-const STATE_ELEMS: usize = 2 * 1 * 128;
+const STATE_ELEMS: usize = 2 * 128; // flat [2, 1, 128]
 const SILERO_REPO: &str = "onnx-community/silero-vad";
 const SILERO_HF_FILE: &str = "onnx/model.onnx";
 const SILERO_LOCAL_FILE: &str = "silero_vad.onnx";
