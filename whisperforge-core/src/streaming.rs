@@ -312,6 +312,107 @@ fn lcp_len(a: &[TokenEmit], b: &[TokenEmit]) -> usize {
     b_content[lcp_n - 1].0 + 1
 }
 
+pub struct EndpointConfig {
+    /// Hard EOU: minimum trailing silence (seconds) after which an utterance is ended (default 2.0).
+    pub silence_secs: f32,
+    /// Soft EOU: minimum trailing silence after a terminal punctuation mark (default 0.8).
+    pub punct_silence_secs: f32,
+    /// Suppress EOU if the utterance has been running for less than this many seconds (default 0.5).
+    pub min_utterance_secs: f32,
+}
+
+impl Default for EndpointConfig {
+    fn default() -> Self {
+        Self {
+            silence_secs: 2.0,
+            punct_silence_secs: 0.8,
+            min_utterance_secs: 0.5,
+        }
+    }
+}
+
+/// Hybrid silence + punctuation end-of-utterance detector.
+///
+/// Call `step` after each chunker + committer round. When it returns `true`, fire the EOU
+/// event, then call `reset` before the next utterance.
+pub struct Endpointer {
+    cfg: EndpointConfig,
+    /// Byte-length of committed text when this utterance baseline was captured.
+    text_len_at_reset: usize,
+    /// Prevents re-firing before the caller calls `reset`.
+    fired: bool,
+    /// Set by `reset`; the next `step` call captures the current committed-text length
+    /// as the new baseline (avoids requiring committed text as a parameter to `reset`).
+    needs_baseline_update: bool,
+    /// Wall-clock second when first new committed text appeared after the last reset.
+    utterance_start_secs: Option<f32>,
+}
+
+impl Endpointer {
+    pub fn new(cfg: EndpointConfig) -> Self {
+        Self {
+            cfg,
+            text_len_at_reset: 0,
+            fired: false,
+            needs_baseline_update: false,
+            utterance_start_secs: None,
+        }
+    }
+
+    /// Called after each chunker tick + committer round. Returns `true` if EOU should fire.
+    pub fn step(&mut self, window: &StreamWindow, latest_committed_text: &str) -> bool {
+        if self.fired {
+            return false;
+        }
+
+        if self.needs_baseline_update {
+            self.text_len_at_reset = latest_committed_text.len();
+            self.needs_baseline_update = false;
+        }
+
+        let has_new_committed = latest_committed_text.len() > self.text_len_at_reset;
+
+        if has_new_committed && self.utterance_start_secs.is_none() {
+            self.utterance_start_secs = Some(window.window_start_secs);
+        }
+
+        let current_secs =
+            window.window_start_secs + window.real_samples as f32 / SAMPLE_RATE as f32;
+        let utterance_secs = self
+            .utterance_start_secs
+            .map(|start| current_secs - start)
+            .unwrap_or(0.0);
+        if utterance_secs < self.cfg.min_utterance_secs {
+            return false;
+        }
+
+        if has_new_committed && window.trailing_silence_secs >= self.cfg.silence_secs {
+            self.fired = true;
+            return true;
+        }
+
+        if has_new_committed {
+            let new_text = &latest_committed_text[self.text_len_at_reset..];
+            if matches!(new_text.chars().last(), Some('.') | Some('!') | Some('?'))
+                && window.trailing_silence_secs >= self.cfg.punct_silence_secs
+            {
+                self.fired = true;
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Reset state after an EOU has been handled. The next `step` call will capture the
+    /// current committed-text length as the baseline for the new utterance.
+    pub fn reset(&mut self) {
+        self.fired = false;
+        self.utterance_start_secs = None;
+        self.needs_baseline_update = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,6 +676,71 @@ mod tests {
             committed_ids(&comm),
             vec![50365, 1, 50367, 2],
             "content tokens tok1/tok2 match despite different timestamp IDs; both windows committed"
+        );
+        Ok(())
+    }
+
+    fn make_window(trailing_silence_secs: f32, window_start_secs: f32) -> StreamWindow {
+        let real_samples = 5 * SAMPLE_RATE as usize;
+        StreamWindow {
+            samples: vec![0.0f32; real_samples],
+            real_samples,
+            window_start_secs,
+            had_speech: trailing_silence_secs < 5.0,
+            trailing_silence_secs,
+        }
+    }
+
+    #[test]
+    fn test_endpointer_no_eou_silence_no_text() -> Result<()> {
+        let cfg = EndpointConfig {
+            silence_secs: 2.0,
+            punct_silence_secs: 0.8,
+            min_utterance_secs: 0.0,
+        };
+        let mut ep = Endpointer::new(cfg);
+        let window = make_window(2.5, 0.0);
+        assert!(!ep.step(&window, ""), "no EOU when committed text is empty");
+        Ok(())
+    }
+
+    #[test]
+    fn test_endpointer_hard_eou_fires_once() -> Result<()> {
+        let cfg = EndpointConfig {
+            silence_secs: 2.0,
+            punct_silence_secs: 0.8,
+            min_utterance_secs: 0.0,
+        };
+        let mut ep = Endpointer::new(cfg);
+
+        // Speech in progress — not enough silence yet.
+        assert!(!ep.step(&make_window(0.3, 0.0), "hello world"));
+        // Long trailing silence — hard EOU fires.
+        assert!(
+            ep.step(&make_window(2.5, 1.0), "hello world"),
+            "hard EOU should fire"
+        );
+        // Without reset, must not re-fire.
+        assert!(
+            !ep.step(&make_window(3.0, 2.0), "hello world"),
+            "must not re-fire before reset"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_endpointer_soft_eou_punctuation() -> Result<()> {
+        let cfg = EndpointConfig {
+            silence_secs: 2.0,
+            punct_silence_secs: 0.8,
+            min_utterance_secs: 0.0,
+        };
+        let mut ep = Endpointer::new(cfg);
+        // Terminal period + 0.9 s silence → soft EOU.
+        assert!(
+            ep.step(&make_window(0.9, 0.0), "Hello."),
+            "soft EOU should fire after '.' + 0.9 s silence"
         );
         Ok(())
     }
