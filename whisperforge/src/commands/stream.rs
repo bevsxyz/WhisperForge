@@ -1,3 +1,4 @@
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +20,7 @@ use whisperforge_core::{
 
 use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
 use crate::device::{DeviceChoice, ResolvedDevice, resolve};
-use crate::stream_ui::{StreamSink, TerminalSink};
+use crate::stream_ui::{FileTranscriptSink, JsonSink, MultiSink, StreamSink, TerminalSink};
 
 #[derive(Parser, Debug)]
 pub struct StreamArgs {
@@ -188,7 +189,20 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
         mic.native_sample_rate, mic.native_channels
     );
 
-    let mut sink: Box<dyn StreamSink> = Box::new(TerminalSink::new(!args.no_color));
+    let mut sinks: Vec<Box<dyn StreamSink>> = Vec::new();
+    if args.json {
+        sinks.push(Box::new(JsonSink::new(io::stdout())));
+    } else {
+        sinks.push(Box::new(TerminalSink::new(!args.no_color)));
+    }
+    if let Some(path) = &args.transcript_to {
+        sinks.push(Box::new(FileTranscriptSink::open(path)?));
+    }
+    let mut sink: Box<dyn StreamSink> = if sinks.len() == 1 {
+        sinks.remove(0)
+    } else {
+        Box::new(MultiSink::new(sinks))
+    };
 
     let shutdown = Arc::new(AtomicBool::new(false));
     {
@@ -205,6 +219,21 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
         });
     }
 
+    let mut wav_writer: Option<hound::WavWriter<std::io::BufWriter<std::fs::File>>> = args
+        .record_to
+        .as_ref()
+        .map(|path| {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 16_000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            hound::WavWriter::create(path, spec)
+        })
+        .transpose()
+        .context("open WAV writer for --record-to")?;
+
     const WINDOW_SAMPLES: usize = 480_000; // 30 s at 16 kHz — Whisper's expected input length
 
     let mut drain_buf = vec![0.0f32; 4096];
@@ -217,6 +246,12 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
         if n == 0 {
             thread::sleep(Duration::from_millis(5));
             continue;
+        }
+
+        if let Some(writer) = wav_writer.as_mut() {
+            for &sample in &drain_buf[..n] {
+                writer.write_sample(sample).context("write WAV sample")?;
+            }
         }
 
         let window = match chunker.push(&drain_buf[..n]) {
@@ -302,6 +337,9 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
         sink.on_endpoint(&utterance_committed, utterance_start_secs, end_secs)?;
     }
 
+    if let Some(writer) = wav_writer.take() {
+        writer.finalize().context("finalize WAV writer")?;
+    }
     mic.stop();
     sink.close()?;
     Ok(())

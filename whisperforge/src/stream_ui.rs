@@ -1,5 +1,7 @@
 use std::io::{self, Write};
 
+use serde_json::json;
+
 use anyhow::Result;
 use crossterm::{
     cursor::MoveToColumn,
@@ -94,30 +96,56 @@ impl StreamSink for TerminalSink {
 /// NDJSON output sink — body implemented in C11.
 pub struct JsonSink<W: Write> {
     pub writer: W,
+    start: std::time::Instant,
 }
 
 impl<W: Write> JsonSink<W> {
     pub fn new(writer: W) -> Self {
-        Self { writer }
+        Self {
+            writer,
+            start: std::time::Instant::now(),
+        }
+    }
+
+    fn elapsed_t(&self) -> f64 {
+        self.start.elapsed().as_secs_f64()
     }
 }
 
 impl<W: Write> StreamSink for JsonSink<W> {
-    fn on_partial(&mut self, _committed: &str, _tentative: &str) -> Result<()> {
+    fn on_partial(&mut self, committed: &str, tentative: &str) -> Result<()> {
+        let t = self.elapsed_t();
+        writeln!(
+            self.writer,
+            "{}",
+            json!({"t": t, "type": "partial", "committed": committed, "tentative": tentative})
+        )?;
         Ok(())
     }
-    fn on_commit(&mut self, _new_committed_text: &str, _at_secs: f32) -> Result<()> {
+
+    fn on_commit(&mut self, new_committed_text: &str, at_secs: f32) -> Result<()> {
+        let t = self.elapsed_t();
+        writeln!(
+            self.writer,
+            "{}",
+            json!({"t": t, "type": "commit", "text": new_committed_text, "at_secs": at_secs})
+        )?;
         Ok(())
     }
-    fn on_endpoint(
-        &mut self,
-        _full_utterance: &str,
-        _start_secs: f32,
-        _end_secs: f32,
-    ) -> Result<()> {
+
+    fn on_endpoint(&mut self, full_utterance: &str, start_secs: f32, end_secs: f32) -> Result<()> {
+        let t = self.elapsed_t();
+        writeln!(
+            self.writer,
+            "{}",
+            json!({"t": t, "type": "endpoint", "text": full_utterance, "start_secs": start_secs, "end_secs": end_secs})
+        )?;
         Ok(())
     }
+
     fn close(&mut self) -> Result<()> {
+        let t = self.elapsed_t();
+        writeln!(self.writer, "{}", json!({"t": t, "type": "shutdown"}))?;
         self.writer.flush()?;
         Ok(())
     }
@@ -145,14 +173,17 @@ impl StreamSink for FileTranscriptSink {
     fn on_commit(&mut self, _new_committed_text: &str, _at_secs: f32) -> Result<()> {
         Ok(())
     }
-    fn on_endpoint(
-        &mut self,
-        _full_utterance: &str,
-        _start_secs: f32,
-        _end_secs: f32,
-    ) -> Result<()> {
+    fn on_endpoint(&mut self, full_utterance: &str, start_secs: f32, end_secs: f32) -> Result<()> {
+        writeln!(
+            self.file,
+            "[{}–{}] {}",
+            fmt_secs(start_secs),
+            fmt_secs(end_secs),
+            full_utterance
+        )?;
         Ok(())
     }
+
     fn close(&mut self) -> Result<()> {
         self.file.flush()?;
         Ok(())

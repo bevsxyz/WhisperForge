@@ -3539,6 +3539,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hound"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8335,6 +8341,7 @@ dependencies = [
  "crossterm 0.28.1",
  "half",
  "hf-hub",
+ "hound",
  "ort",
  "ringbuf",
  "safetensors 0.7.0",
