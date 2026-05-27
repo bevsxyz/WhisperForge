@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 
 mod commands;
 mod device;
+mod stream_ui;
 
 #[derive(Parser, Debug)]
 #[command(
