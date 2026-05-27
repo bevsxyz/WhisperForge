@@ -279,8 +279,7 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
             }
 
             if !utterance_committed.is_empty() {
-                let end_secs = window.window_start_secs
-                    + window.real_samples as f32 / 16_000.0;
+                let end_secs = window.window_start_secs + window.real_samples as f32 / 16_000.0;
                 sink.on_endpoint(&utterance_committed, utterance_start_secs, end_secs)?;
             }
 

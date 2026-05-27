@@ -109,7 +109,12 @@ impl<W: Write> StreamSink for JsonSink<W> {
     fn on_commit(&mut self, _new_committed_text: &str, _at_secs: f32) -> Result<()> {
         Ok(())
     }
-    fn on_endpoint(&mut self, _full_utterance: &str, _start_secs: f32, _end_secs: f32) -> Result<()> {
+    fn on_endpoint(
+        &mut self,
+        _full_utterance: &str,
+        _start_secs: f32,
+        _end_secs: f32,
+    ) -> Result<()> {
         Ok(())
     }
     fn close(&mut self) -> Result<()> {
@@ -140,7 +145,12 @@ impl StreamSink for FileTranscriptSink {
     fn on_commit(&mut self, _new_committed_text: &str, _at_secs: f32) -> Result<()> {
         Ok(())
     }
-    fn on_endpoint(&mut self, _full_utterance: &str, _start_secs: f32, _end_secs: f32) -> Result<()> {
+    fn on_endpoint(
+        &mut self,
+        _full_utterance: &str,
+        _start_secs: f32,
+        _end_secs: f32,
+    ) -> Result<()> {
         Ok(())
     }
     fn close(&mut self) -> Result<()> {
