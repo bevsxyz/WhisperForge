@@ -46,7 +46,7 @@ flate2 = "1.0"
 rand = "0.10"
 
 # ONNX VAD inference
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "download-binaries", "copy-dylibs"] }
 
 # Terminal UI and logging
 crossterm = "0.28"

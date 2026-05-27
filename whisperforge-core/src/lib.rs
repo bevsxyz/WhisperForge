@@ -10,6 +10,7 @@ pub mod kv_cache;
 pub mod load;
 pub mod model;
 pub mod transcribe;
+pub mod vad_silero;
 
 #[cfg(feature = "file-io")]
 pub mod audio_stream;
@@ -26,6 +27,7 @@ pub use kv_cache::{KvCache, forward_decoder_cached};
 pub use load::{load_config_from_bytes, load_whisper_from_bytes};
 pub use model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
 pub use transcribe::{WhisperTranscriber, transcribe_audio};
+pub use vad_silero::{SileroVad, ensure_silero_model};
 
 #[cfg(feature = "file-io")]
 pub use audio::load_audio_file;

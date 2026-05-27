@@ -4994,7 +4994,6 @@ version = "2.0.0-rc.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fa7e49bd669d32d7bc2a15ec540a527e7764aec722a45467814005725bcd721"
 dependencies = [
- "libloading 0.8.9",
  "ndarray 0.16.1",
  "ort-sys",
  "smallvec 2.0.0-alpha.10",
@@ -5007,7 +5006,11 @@ version = "2.0.0-rc.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2aba9f5c7c479925205799216e7e5d07cc1d4fa76ea8058c60a9a30f6a4e890"
 dependencies = [
+ "flate2",
  "pkg-config",
+ "sha2",
+ "tar",
+ "ureq 3.3.0",
 ]
 
 [[package]]
@@ -8372,6 +8375,8 @@ dependencies = [
  "cpal",
  "cubecl",
  "flate2",
+ "hf-hub",
+ "ort",
  "rand 0.10.1",
  "ringbuf",
  "rubato",
