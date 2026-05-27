@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use crate::stream_decode::TokenEmit;
 use crate::vad_silero::SileroVad;
 
 const SAMPLE_RATE: u32 = 16_000;
@@ -173,6 +174,144 @@ impl Chunker {
     }
 }
 
+/// Outcome of one `Committer::ingest` or `finalize_utterance` call.
+pub enum CommitDelta {
+    /// Newly stable tokens since the previous call. May be empty.
+    Committed {
+        new_tokens: Vec<TokenEmit>,
+        new_text: String,
+    },
+    /// Current tentative tail (everything after the committed prefix). Updated every round.
+    Tentative {
+        tokens: Vec<TokenEmit>,
+        text: String,
+    },
+}
+
+/// LocalAgreement-2 token committer.
+///
+/// Compares successive window decode outputs and commits the longest stable
+/// prefix; everything past that prefix is tentative until the next round confirms it.
+pub struct Committer {
+    last_candidate: Vec<TokenEmit>,
+    committed: Vec<TokenEmit>,
+    committed_text: String,
+}
+
+impl Committer {
+    pub fn new() -> Self {
+        Self {
+            last_candidate: Vec::new(),
+            committed: Vec::new(),
+            committed_text: String::new(),
+        }
+    }
+
+    /// Ingest a new full-window decode result.
+    ///
+    /// Returns `(committed_delta, tentative_delta)`.
+    pub fn ingest(&mut self, candidate: Vec<TokenEmit>) -> (CommitDelta, CommitDelta) {
+        let lcp = lcp_len(&self.last_candidate, &candidate);
+        let new_start = self.committed.len();
+        let new_end = lcp.max(new_start);
+
+        // Extend the committed buffer with any newly stable tokens.
+        for t in candidate[new_start..new_end].iter() {
+            self.committed.push(t.clone());
+        }
+        let new_text = build_text(&self.committed[new_start..]);
+        self.committed_text.push_str(&new_text);
+
+        // Collect the return slice before moving candidate.
+        let new_tokens: Vec<TokenEmit> = self.committed[new_start..].to_vec();
+        let tentative_tokens: Vec<TokenEmit> = candidate[lcp..].to_vec();
+        let tentative_text = build_text(&tentative_tokens);
+
+        self.last_candidate = candidate;
+
+        (
+            CommitDelta::Committed {
+                new_tokens,
+                new_text,
+            },
+            CommitDelta::Tentative {
+                tokens: tentative_tokens,
+                text: tentative_text,
+            },
+        )
+    }
+
+    /// Force-commit everything tentative. Called by the endpointer on EOU.
+    ///
+    /// Clears `last_candidate` so the next utterance starts with a clean slate.
+    pub fn finalize_utterance(&mut self) -> CommitDelta {
+        let start = self.committed.len();
+        let new_tokens: Vec<TokenEmit> = self.last_candidate[start..].to_vec();
+        let new_text = build_text(&new_tokens);
+        self.committed_text.push_str(&new_text);
+        self.committed.extend(new_tokens.iter().cloned());
+        self.last_candidate.clear();
+        CommitDelta::Committed {
+            new_tokens,
+            new_text,
+        }
+    }
+
+    pub fn committed_tokens(&self) -> &[TokenEmit] {
+        &self.committed
+    }
+
+    pub fn committed_text(&self) -> &str {
+        &self.committed_text
+    }
+}
+
+impl Default for Committer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Join text pieces for non-special tokens.
+fn build_text(tokens: &[TokenEmit]) -> String {
+    tokens
+        .iter()
+        .filter(|t| !t.is_special)
+        .map(|t| t.text.as_str())
+        .collect()
+}
+
+/// Length of the longest common non-timestamp-token prefix between `a` and `b`,
+/// expressed as an exclusive end index in `b`.
+///
+/// Timestamp tokens (`window_ts_secs.is_some()`) are skipped in both sequences
+/// so that differing timestamp values between overlapping windows don't break the match.
+fn lcp_len(a: &[TokenEmit], b: &[TokenEmit]) -> usize {
+    let a_content: Vec<(usize, u32)> = a
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.window_ts_secs.is_none())
+        .map(|(i, t)| (i, t.id))
+        .collect();
+    let b_content: Vec<(usize, u32)> = b
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.window_ts_secs.is_none())
+        .map(|(i, t)| (i, t.id))
+        .collect();
+
+    let lcp_n = a_content
+        .iter()
+        .zip(b_content.iter())
+        .take_while(|((_, aid), (_, bid))| aid == bid)
+        .count();
+
+    if lcp_n == 0 {
+        return 0;
+    }
+    b_content[lcp_n - 1].0 + 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +446,136 @@ mod tests {
             early_speech.len()
         );
 
+        Ok(())
+    }
+
+    fn make_token(id: u32) -> TokenEmit {
+        TokenEmit {
+            id,
+            text: format!("tok{id}"),
+            logprob: 0.0,
+            window_ts_secs: None,
+            is_special: false,
+        }
+    }
+
+    fn make_ts_token(id: u32, ts: f32) -> TokenEmit {
+        TokenEmit {
+            id,
+            text: String::new(),
+            logprob: 0.0,
+            window_ts_secs: Some(ts),
+            is_special: true,
+        }
+    }
+
+    fn committed_ids(delta: &CommitDelta) -> Vec<u32> {
+        match delta {
+            CommitDelta::Committed { new_tokens, .. } => new_tokens.iter().map(|t| t.id).collect(),
+            CommitDelta::Tentative { .. } => vec![],
+        }
+    }
+
+    fn tentative_ids(delta: &CommitDelta) -> Vec<u32> {
+        match delta {
+            CommitDelta::Tentative { tokens, .. } => tokens.iter().map(|t| t.id).collect(),
+            CommitDelta::Committed { .. } => vec![],
+        }
+    }
+
+    /// LocalAgreement-2: three-round scenario from the C7 acceptance criteria.
+    #[test]
+    fn test_committer_local_agreement_2() -> Result<()> {
+        let mut c = Committer::new();
+
+        // Round 1: [tok1, tok2, tok3] — nothing can be committed yet (no prior candidate).
+        let (comm, tent) = c.ingest(vec![make_token(1), make_token(2), make_token(3)]);
+        assert!(
+            committed_ids(&comm).is_empty(),
+            "round 1: nothing committed"
+        );
+        assert_eq!(
+            tentative_ids(&tent),
+            vec![1, 2, 3],
+            "round 1: all tokens tentative"
+        );
+
+        // Round 2: [tok1, tok2, tok4, tok5] — LCP with round-1 is [tok1, tok2].
+        let (comm, tent) = c.ingest(vec![
+            make_token(1),
+            make_token(2),
+            make_token(4),
+            make_token(5),
+        ]);
+        assert_eq!(
+            committed_ids(&comm),
+            vec![1, 2],
+            "round 2: [tok1, tok2] committed"
+        );
+        assert_eq!(
+            tentative_ids(&tent),
+            vec![4, 5],
+            "round 2: tentative = [tok4, tok5]"
+        );
+        assert_eq!(c.committed_text(), "tok1tok2");
+
+        // Round 3: [tok1, tok2, tok4, tok6] — LCP with round-2 is [tok1, tok2, tok4].
+        let (comm, tent) = c.ingest(vec![
+            make_token(1),
+            make_token(2),
+            make_token(4),
+            make_token(6),
+        ]);
+        assert_eq!(
+            committed_ids(&comm),
+            vec![4],
+            "round 3: [tok4] newly committed"
+        );
+        assert_eq!(tentative_ids(&tent), vec![6], "round 3: tentative = [tok6]");
+        assert_eq!(c.committed_text(), "tok1tok2tok4");
+
+        // finalize_utterance: force-commit the remaining [tok6].
+        let final_delta = c.finalize_utterance();
+        assert_eq!(
+            committed_ids(&final_delta),
+            vec![6],
+            "finalize: [tok6] committed"
+        );
+        assert_eq!(c.committed_text(), "tok1tok2tok4tok6");
+        assert_eq!(
+            c.committed_tokens()
+                .iter()
+                .map(|t| t.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 4, 6]
+        );
+
+        Ok(())
+    }
+
+    /// Timestamp tokens between words must not break LCP matching.
+    #[test]
+    fn test_committer_lcp_ignores_timestamps() -> Result<()> {
+        let mut c = Committer::new();
+        // Round 1: [ts:0.0, tok1, ts:0.2, tok2]
+        c.ingest(vec![
+            make_ts_token(50364, 0.0),
+            make_token(1),
+            make_ts_token(50366, 0.2),
+            make_token(2),
+        ]);
+        // Round 2: same content tokens but different timestamp values
+        let (comm, _tent) = c.ingest(vec![
+            make_ts_token(50365, 0.02),
+            make_token(1),
+            make_ts_token(50367, 0.22),
+            make_token(2),
+        ]);
+        assert_eq!(
+            committed_ids(&comm),
+            vec![50365, 1, 50367, 2],
+            "content tokens tok1/tok2 match despite different timestamp IDs; both windows committed"
+        );
         Ok(())
     }
 

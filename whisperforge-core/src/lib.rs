@@ -31,7 +31,7 @@ pub use kv_cache::{KvCache, forward_decoder_cached};
 pub use load::{load_config_from_bytes, load_whisper_from_bytes};
 pub use model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
 pub use stream_decode::{DecodeContext, TokenEmit, decode_window};
-pub use streaming::{Chunker, StreamWindow, WindowConfig};
+pub use streaming::{Chunker, CommitDelta, Committer, StreamWindow, WindowConfig};
 pub use transcribe::{WhisperTranscriber, transcribe_audio};
 pub use vad_silero::{SileroVad, ensure_silero_model};
 

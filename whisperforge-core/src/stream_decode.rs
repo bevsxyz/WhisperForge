@@ -8,6 +8,7 @@ use tracing::{Level, event};
 use crate::kv_cache::{KvCache, forward_decoder_cached};
 use crate::model::Whisper;
 
+#[derive(Clone)]
 pub struct TokenEmit {
     pub id: u32,
     /// Raw BPE piece from the tokenizer vocabulary; empty string for special and timestamp tokens.
