@@ -12,10 +12,15 @@ keywords = ["whisper", "speech-to-text", "transcription", "gpu", "wgpu"]
 categories = ["command-line-utilities", "multimedia::audio"]
 readme = "README.md"
 autobins = false
+autobenches = false
 
 [[bin]]
 name = "wforge"
 path = "src/main.rs"
+
+[[bin]]
+name = "stream_bench"
+path = "benches/stream_latency.rs"
 
 [dependencies]
 whisperforge-core = { path = "../whisperforge-core", version = "0.4" }

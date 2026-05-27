@@ -10,12 +10,11 @@ use burn::tensor::backend::Backend;
 use burn_flex::{Flex, FlexDevice};
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait};
-use ringbuf::traits::Consumer as _;
 use tokenizers::Tokenizer;
 use whisperforge_core::{
-    Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, MicCapture, PromptContext,
-    SileroVad, Whisper, WindowConfig, compute_mel_from_samples, decode_window, ensure_silero_model,
-    stream_decode::DecodeContext,
+    CaptureSource, Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, FakeMic,
+    MicCapture, PromptContext, SileroVad, Whisper, WindowConfig, compute_mel_from_samples,
+    decode_window, ensure_silero_model, stream_decode::DecodeContext,
 };
 
 use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
@@ -83,6 +82,14 @@ pub struct StreamArgs {
     /// Disable ANSI color output
     #[arg(long)]
     pub no_color: bool,
+
+    /// Read audio from a WAV file instead of the microphone (16 kHz mono expected)
+    #[arg(long)]
+    pub from_file: Option<PathBuf>,
+
+    /// With --from-file: push samples as fast as possible (no real-time throttle)
+    #[arg(long)]
+    pub no_realtime: bool,
 }
 
 pub fn run(args: StreamArgs) -> Result<()> {
@@ -182,11 +189,21 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
     });
     let mut prompt_ctx = PromptContext::new(args.prompt_tokens, prevtext_token_id);
 
-    eprintln!("Opening microphone…");
-    let mic = MicCapture::open(args.input_device.as_deref()).context("open microphone")?;
+    let source = if let Some(ref path) = args.from_file {
+        eprintln!("Reading from file: {}", path.display());
+        let (fake_mic, _feeder_handle) =
+            FakeMic::open(path, !args.no_realtime).context("open file source")?;
+        CaptureSource::File(fake_mic)
+    } else {
+        eprintln!("Opening microphone…");
+        CaptureSource::Microphone(
+            MicCapture::open(args.input_device.as_deref()).context("open microphone")?,
+        )
+    };
     eprintln!(
         "Streaming at {}Hz / {} ch native → 16 kHz mono. Press Ctrl-C to stop.",
-        mic.native_sample_rate, mic.native_channels
+        source.native_sample_rate(),
+        source.native_channels()
     );
 
     let mut sinks: Vec<Box<dyn StreamSink>> = Vec::new();
@@ -242,9 +259,13 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
     let mut utterance_started = false;
 
     while !shutdown.load(Ordering::SeqCst) {
-        let n = mic.consumer.lock().unwrap().pop_slice(&mut drain_buf);
+        let n = source.pop_samples(&mut drain_buf);
         if n == 0 {
-            thread::sleep(Duration::from_millis(5));
+            if source.is_file_done() {
+                shutdown.store(true, Ordering::SeqCst);
+            } else {
+                thread::sleep(Duration::from_millis(5));
+            }
             continue;
         }
 
@@ -340,7 +361,7 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
     if let Some(writer) = wav_writer.take() {
         writer.finalize().context("finalize WAV writer")?;
     }
-    mic.stop();
+    source.stop();
     sink.close()?;
     Ok(())
 }

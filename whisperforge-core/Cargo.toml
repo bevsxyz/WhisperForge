@@ -35,6 +35,7 @@ ringbuf = { workspace = true }
 tracing = { workspace = true }
 ort = { workspace = true }
 hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
+hound = "3.5"
 
 [features]
 default = ["file-io"]

@@ -4,9 +4,11 @@ use ringbuf::{
     HeapRb,
     traits::{Consumer, Producer, Split},
 };
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::thread::JoinHandle;
 
 /// Captures audio from a microphone and resamples it to 16 kHz mono.
 pub struct MicCapture {
@@ -202,6 +204,178 @@ impl MicCapture {
     pub fn stop(self) {
         drop(self._stream);
         drop(self._resample_thread);
+    }
+}
+
+/// File-backed drop-in for `MicCapture`. Feeds a WAV file into a ring buffer at
+/// either real-time (16 kHz wall-clock) or as-fast-as-possible pace.
+///
+/// The WAV must be 16 kHz; multi-channel files are downmixed to mono.
+pub struct FakeMic {
+    pub consumer: Arc<Mutex<ringbuf::HeapCons<f32>>>,
+    pub native_sample_rate: u32,
+    pub native_channels: u16,
+    is_done: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
+}
+
+impl FakeMic {
+    /// Open a WAV file and start a background feeder thread.
+    ///
+    /// Returns the `FakeMic` consumer handle and the feeder `JoinHandle`.
+    /// `realtime=true` throttles the feeder to 16 kHz wall-clock pace;
+    /// `realtime=false` pushes as fast as the consumer drains.
+    pub fn open(path: &Path, realtime: bool) -> Result<(Self, JoinHandle<()>)> {
+        let reader = hound::WavReader::open(path)
+            .with_context(|| format!("open WAV: {}", path.display()))?;
+        let spec = reader.spec();
+
+        if spec.sample_rate != 16_000 {
+            bail!(
+                "FakeMic: expected 16 kHz WAV, got {} Hz ({})",
+                spec.sample_rate,
+                path.display()
+            );
+        }
+
+        let channels = spec.channels;
+        let native_sample_rate = spec.sample_rate;
+
+        // Read all samples upfront; downmix to mono f32.
+        let samples: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => reader
+                .into_samples::<f32>()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .context("read f32 samples")?
+                .chunks(channels as usize)
+                .map(|ch| ch.iter().sum::<f32>() / channels as f32)
+                .collect(),
+            hound::SampleFormat::Int => {
+                let max_val = (1i64 << (spec.bits_per_sample - 1)) as f32;
+                reader
+                    .into_samples::<i32>()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .context("read i32 samples")?
+                    .chunks(channels as usize)
+                    .map(|ch| ch.iter().map(|&s| s as f32 / max_val).sum::<f32>() / channels as f32)
+                    .collect()
+            }
+        };
+
+        let rb = HeapRb::<f32>::new(32_000);
+        let (prod, cons) = rb.split();
+        let consumer = Arc::new(Mutex::new(cons));
+        let prod = Arc::new(Mutex::new(prod));
+
+        let is_done = Arc::new(AtomicBool::new(false));
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let is_done_thread = Arc::clone(&is_done);
+        let shutdown_thread = Arc::clone(&shutdown);
+        let prod_thread = Arc::clone(&prod);
+
+        let handle = thread::Builder::new()
+            .name("fake-mic-feeder".to_string())
+            .spawn(move || {
+                const CHUNK: usize = 512;
+                let mut offset = 0;
+                while offset < samples.len() && !shutdown_thread.load(Ordering::Relaxed) {
+                    let end = (offset + CHUNK).min(samples.len());
+                    let chunk = &samples[offset..end];
+
+                    // Push chunk; if buffer is full, wait briefly and retry.
+                    loop {
+                        if shutdown_thread.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let written = prod_thread.lock().unwrap().push_slice(chunk);
+                        if written == chunk.len() {
+                            break;
+                        }
+                        // Partial push — back up and retry after a short sleep.
+                        // (Only possible if ring buffer is smaller than CHUNK; in
+                        // practice the buffer is 32 000 >> 512 so this is a safety net.)
+                        thread::sleep(std::time::Duration::from_millis(1));
+                    }
+
+                    offset = end;
+
+                    if realtime {
+                        // 512 samples @ 16 kHz = 32 ms
+                        thread::sleep(std::time::Duration::from_millis(32));
+                    }
+                }
+                is_done_thread.store(true, Ordering::Release);
+            })
+            .context("spawn fake-mic feeder thread")?;
+
+        Ok((
+            FakeMic {
+                consumer,
+                native_sample_rate,
+                native_channels: 1,
+                is_done,
+                shutdown,
+            },
+            handle,
+        ))
+    }
+
+    /// Returns `true` once the feeder thread has pushed all file samples.
+    pub fn is_done(&self) -> bool {
+        self.is_done.load(Ordering::Acquire)
+    }
+
+    /// Signal the feeder thread to stop (used on early shutdown).
+    pub fn stop(self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Unified capture source: either a live microphone or a file-fed `FakeMic`.
+pub enum CaptureSource {
+    Microphone(MicCapture),
+    File(FakeMic),
+}
+
+impl CaptureSource {
+    /// Drain up to `buf.len()` 16 kHz mono samples. Returns the count actually read.
+    pub fn pop_samples(&self, buf: &mut [f32]) -> usize {
+        match self {
+            CaptureSource::Microphone(mic) => mic.consumer.lock().unwrap().pop_slice(buf),
+            CaptureSource::File(fake) => fake.consumer.lock().unwrap().pop_slice(buf),
+        }
+    }
+
+    /// Returns `true` when a `File` source's feeder thread has finished and the
+    /// ring buffer is empty. Always `false` for a live `Microphone` source.
+    pub fn is_file_done(&self) -> bool {
+        match self {
+            CaptureSource::Microphone(_) => false,
+            CaptureSource::File(fake) => fake.is_done(),
+        }
+    }
+
+    pub fn native_sample_rate(&self) -> u32 {
+        match self {
+            CaptureSource::Microphone(mic) => mic.native_sample_rate,
+            CaptureSource::File(fake) => fake.native_sample_rate,
+        }
+    }
+
+    pub fn native_channels(&self) -> u16 {
+        match self {
+            CaptureSource::Microphone(mic) => mic.native_channels,
+            CaptureSource::File(fake) => fake.native_channels,
+        }
+    }
+
+    /// Shut down the underlying capture source.
+    pub fn stop(self) {
+        match self {
+            CaptureSource::Microphone(mic) => mic.stop(),
+            CaptureSource::File(fake) => fake.stop(),
+        }
     }
 }
 
