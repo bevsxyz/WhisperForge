@@ -413,6 +413,80 @@ impl Endpointer {
     }
 }
 
+/// Manages the cross-utterance prompt prefix fed to the streaming decoder.
+///
+/// Call `update_after_eou` immediately after an EOU fires, passing the full committed
+/// token list from `Committer::committed_tokens`. Then pass `prompt_tokens()` into
+/// `DecodeContext::prompt_tokens` for every window until the next EOU.
+pub struct PromptContext {
+    /// Maximum number of committed regular-token IDs to carry forward (default 60).
+    max_prompt_tokens: usize,
+    /// The `<|prevtext|>` token ID, or `None` for models that lack it (e.g. tiny.en).
+    prevtext_token_id: Option<u32>,
+    /// Prompt built after the last EOU; empty before the first EOU.
+    current_prompt: Vec<u32>,
+}
+
+impl PromptContext {
+    /// `prevtext_token_id`: result of `tokenizer.token_to_id("<|prevtext|>")`.
+    /// Pass `None` for English-only models that lack `<|prevtext|>` in their vocabulary.
+    pub fn new(max_prompt_tokens: usize, prevtext_token_id: Option<u32>) -> Self {
+        Self {
+            max_prompt_tokens,
+            prevtext_token_id,
+            current_prompt: Vec::new(),
+        }
+    }
+
+    /// Update the stored prompt after an EOU.
+    ///
+    /// Extracts the last `max_prompt_tokens` regular-token IDs (filter: `!is_special`),
+    /// prepends `<|prevtext|>` when available and the tail is non-empty, and caps the total
+    /// so that `prompt.len() + sot(1) + lang(1) + transcribe(1) + max_new_tokens ≤ 448`.
+    pub fn update_after_eou(&mut self, committed_tokens: &[TokenEmit], max_new_tokens: usize) {
+        // Whisper's decoder context window is 448 tokens.
+        // 3 slots are reserved for the sot + language + transcribe init tokens.
+        let max_allowed = 448usize.saturating_sub(3 + max_new_tokens);
+        // Reserve one additional slot for the <|prevtext|> prefix if it will be emitted.
+        let text_slots = if self.prevtext_token_id.is_some() {
+            max_allowed.saturating_sub(1)
+        } else {
+            max_allowed
+        };
+        let cap = self.max_prompt_tokens.min(text_slots);
+
+        // Collect regular (non-special) token IDs — same predicate as build_text.
+        let regular_ids: Vec<u32> = committed_tokens
+            .iter()
+            .filter(|t| !t.is_special)
+            .map(|t| t.id)
+            .collect();
+
+        let start = regular_ids.len().saturating_sub(cap);
+        let tail = &regular_ids[start..];
+
+        self.current_prompt.clear();
+        // Only emit <|prevtext|> when there are actual text tokens to accompany it.
+        if let Some(prevtext) = self.prevtext_token_id {
+            if !tail.is_empty() {
+                self.current_prompt.push(prevtext);
+            }
+        }
+        self.current_prompt.extend_from_slice(tail);
+    }
+
+    /// Returns the prompt tokens to pass into `DecodeContext::prompt_tokens`.
+    /// Empty before the first EOU or after `reset`.
+    pub fn prompt_tokens(&self) -> &[u32] {
+        &self.current_prompt
+    }
+
+    /// Clear the stored prompt (call on stream restart or explicit reset).
+    pub fn reset(&mut self) {
+        self.current_prompt.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,6 +816,113 @@ mod tests {
             ep.step(&make_window(0.9, 0.0), "Hello."),
             "soft EOU should fire after '.' + 0.9 s silence"
         );
+        Ok(())
+    }
+
+    // --- PromptContext tests (no model files required) ---
+
+    fn make_committed_tokens(ids: &[u32]) -> Vec<TokenEmit> {
+        ids.iter().map(|&id| make_token(id)).collect()
+    }
+
+    #[test]
+    fn test_prompt_context_basic() -> Result<()> {
+        let tokens = make_committed_tokens(&[1, 2, 3]);
+        let mut ctx = PromptContext::new(60, Some(99_999));
+        ctx.update_after_eou(&tokens, 128);
+        let p = ctx.prompt_tokens();
+        assert_eq!(p[0], 99_999, "must start with <|prevtext|>");
+        assert_eq!(&p[1..], &[1, 2, 3]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_prompt_context_no_prevtext() -> Result<()> {
+        let tokens = make_committed_tokens(&[1, 2, 3]);
+        let mut ctx = PromptContext::new(60, None);
+        ctx.update_after_eou(&tokens, 128);
+        assert_eq!(ctx.prompt_tokens(), &[1, 2, 3]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_prompt_context_filters_specials() -> Result<()> {
+        let tokens = vec![
+            make_ts_token(50364, 0.0),
+            make_token(1),
+            make_ts_token(50366, 0.2),
+            make_token(2),
+        ];
+        let mut ctx = PromptContext::new(60, None);
+        ctx.update_after_eou(&tokens, 128);
+        assert_eq!(
+            ctx.prompt_tokens(),
+            &[1, 2],
+            "special/timestamp tokens must be excluded from prompt"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_prompt_context_caps_max_prompt_tokens() -> Result<()> {
+        // 101 regular tokens; cap = 60 → last 60 IDs (41 through 100).
+        let ids: Vec<u32> = (0u32..101).collect();
+        let tokens = make_committed_tokens(&ids);
+        let mut ctx = PromptContext::new(60, None);
+        ctx.update_after_eou(&tokens, 128);
+        assert_eq!(ctx.prompt_tokens().len(), 60);
+        assert_eq!(
+            ctx.prompt_tokens()[0],
+            41,
+            "should be the 42nd token (ID 41)"
+        );
+        assert_eq!(ctx.prompt_tokens()[59], 100);
+        Ok(())
+    }
+
+    #[test]
+    fn test_prompt_context_caps_context_limit() -> Result<()> {
+        // max_new_tokens=400 → max_allowed = 448 - 3 - 400 = 45.
+        // prevtext takes 1 slot → text_slots = 44; cap = min(60, 44) = 44.
+        // Total = 1 (prevtext) + 44 = 45.
+        let ids: Vec<u32> = (0u32..100).collect();
+        let tokens = make_committed_tokens(&ids);
+        let mut ctx = PromptContext::new(60, Some(99_999));
+        ctx.update_after_eou(&tokens, 400);
+        assert_eq!(
+            ctx.prompt_tokens().len(),
+            45,
+            "prompt must fit: prevtext(1) + 44 text = 45 ≤ 448-3-400"
+        );
+        assert_eq!(
+            ctx.prompt_tokens()[0],
+            99_999,
+            "first token must be <|prevtext|>"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_prompt_context_no_prevtext_on_empty_commit() -> Result<()> {
+        // Only a timestamp token committed → regular tail is empty → no prevtext emitted.
+        let tokens = vec![make_ts_token(50364, 0.0)];
+        let mut ctx = PromptContext::new(60, Some(99_999));
+        ctx.update_after_eou(&tokens, 128);
+        assert!(
+            ctx.prompt_tokens().is_empty(),
+            "<|prevtext|> must not be emitted when no regular tokens were committed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_prompt_context_reset() -> Result<()> {
+        let tokens = make_committed_tokens(&[1, 2]);
+        let mut ctx = PromptContext::new(60, None);
+        ctx.update_after_eou(&tokens, 128);
+        assert!(!ctx.prompt_tokens().is_empty());
+        ctx.reset();
+        assert!(ctx.prompt_tokens().is_empty());
         Ok(())
     }
 

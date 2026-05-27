@@ -55,6 +55,14 @@ pub fn decode_window<B: Backend>(
     let mut cache = KvCache::new(model, encoder_out);
 
     // Seed the self-attention KV cache with any prior-context prompt tokens.
+    if !ctx.prompt_tokens.is_empty() {
+        event!(
+            Level::DEBUG,
+            prompt_len = ctx.prompt_tokens.len(),
+            prompt_first_token = ctx.prompt_tokens[0],
+            "feeding prompt prefix into KV cache",
+        );
+    }
     for &tok in ctx.prompt_tokens {
         forward_decoder_cached(model, tok, &mut cache, device)
             .with_context(|| format!("feeding prompt token {tok}"))?;
