@@ -267,6 +267,25 @@ pub fn load_audio_file<P: AsRef<Path>>(path: P) -> Result<AudioData> {
     })
 }
 
+/// Apply center=True STFT reflection padding to a 16 kHz mono sample slice.
+///
+/// The caller is responsible for ensuring `samples` has already been padded/truncated
+/// to the desired length (typically `30 * WHISPER_SAMPLE_RATE` = 480,000). No
+/// resampling or conversion is performed. Returns a Vec ready for `compute_stft_magnitudes`.
+pub fn prepare_centered_samples_raw(samples: &[f32], n_fft: usize) -> Vec<f32> {
+    let pad_len = n_fft / 2;
+    let n = samples.len();
+    let mut centered = Vec::with_capacity(n + 2 * pad_len);
+    for i in (1..=pad_len).rev() {
+        centered.push(samples[i]);
+    }
+    centered.extend_from_slice(samples);
+    for i in 0..pad_len {
+        centered.push(samples[n - 2 - i]);
+    }
+    centered
+}
+
 /// Resample/pad/center-reflect audio to produce centered samples ready for STFT.
 ///
 /// Returns the reflection-padded sample vector that `compute_stft_magnitudes` and
@@ -286,18 +305,7 @@ fn prepare_centered_samples(audio: &AudioData, n_fft: usize) -> Result<Vec<f32>>
         padded.resize(target_samples, 0.0);
     }
 
-    // center=True STFT: reflect-pad n_fft/2 samples each side.
-    let pad_len = n_fft / 2;
-    let n = padded.len();
-    let mut centered = Vec::with_capacity(n + 2 * pad_len);
-    for i in (1..=pad_len).rev() {
-        centered.push(padded[i]);
-    }
-    centered.extend_from_slice(&padded);
-    for i in 0..pad_len {
-        centered.push(padded[n - 2 - i]);
-    }
-    Ok(centered)
+    Ok(prepare_centered_samples_raw(&padded, n_fft))
 }
 
 /// Apply mel filterbank, log10 compression, and Whisper normalization to a
@@ -367,6 +375,36 @@ pub fn compute_mel_spectrogram<B: Backend>(
     Ok(mel_compress(ps_tensor, n_mels, n_fft, device))
 }
 
+/// Compute mel spectrogram from a raw 16 kHz mono sample slice.
+///
+/// `samples` must be exactly `30 * WHISPER_SAMPLE_RATE` (480,000) samples — caller is
+/// responsible for padding/truncating. Returns `[1, n_mels, 3000]`.
+pub fn compute_mel_from_samples<B: Backend>(
+    samples: &[f32],
+    n_fft: usize,
+    hop_length: usize,
+    n_mels: usize,
+    device: &B::Device,
+) -> Result<Tensor<B, 3>> {
+    let expected = 30 * WHISPER_SAMPLE_RATE as usize;
+    anyhow::ensure!(
+        samples.len() == expected,
+        "compute_mel_from_samples: expected {} samples, got {}",
+        expected,
+        samples.len()
+    );
+    let centered = prepare_centered_samples_raw(samples, n_fft);
+    let magnitudes = compute_stft_magnitudes(&centered, n_fft, hop_length);
+    let n_freqs = n_fft / 2 + 1;
+    let n_frames = magnitudes[0].len().saturating_sub(1);
+    let ps_flat: Vec<f32> = (0..n_freqs)
+        .flat_map(|f| magnitudes[f][..n_frames].iter().copied())
+        .collect();
+    let ps_tensor: Tensor<B, 2> =
+        Tensor::<B, 1>::from_floats(ps_flat.as_slice(), device).reshape([n_freqs, n_frames]);
+    Ok(mel_compress(ps_tensor, n_mels, n_fft, device))
+}
+
 /// Compute mel spectrogram using the GPU DFT kernel (feature `cubecl-stft`).
 ///
 /// Identical output to `compute_mel_spectrogram` but the STFT runs on the WGPU
@@ -402,6 +440,45 @@ pub fn compute_mel_spectrogram_wgpu(
             .reshape([n_frames, n_freqs])
             .transpose();
 
+    Ok(mel_compress(ps_tensor, n_mels, n_fft, device))
+}
+
+/// GPU variant of `compute_mel_from_samples` using the CubeCL STFT kernel.
+///
+/// `samples` must be exactly `30 * WHISPER_SAMPLE_RATE` (480,000) samples. Returns
+/// `[1, n_mels, 3000]` computed on the WGPU device.
+#[cfg(feature = "cubecl-stft")]
+pub fn compute_mel_from_samples_wgpu(
+    samples: &[f32],
+    n_fft: usize,
+    hop_length: usize,
+    n_mels: usize,
+    device: &burn_wgpu::WgpuDevice,
+) -> Result<Tensor<WgpuBackend, 3>> {
+    use cubecl::prelude::Runtime;
+    let expected = 30 * WHISPER_SAMPLE_RATE as usize;
+    anyhow::ensure!(
+        samples.len() == expected,
+        "compute_mel_from_samples_wgpu: expected {} samples, got {}",
+        expected,
+        samples.len()
+    );
+    let centered = prepare_centered_samples_raw(samples, n_fft);
+    let n_freqs = n_fft / 2 + 1;
+    let n_frames_total = (centered.len() - n_fft) / hop_length + 1;
+    let n_frames = n_frames_total.saturating_sub(1);
+    let client = burn_wgpu::WgpuRuntime::client(device);
+    let gpu_out = crate::stft_gpu::compute_stft_power_gpu(
+        &client,
+        &centered,
+        n_fft,
+        hop_length,
+        n_frames_total,
+    );
+    let ps_tensor: Tensor<WgpuBackend, 2> =
+        Tensor::<WgpuBackend, 1>::from_floats(&gpu_out[..n_frames * n_freqs], device)
+            .reshape([n_frames, n_freqs])
+            .transpose();
     Ok(mel_compress(ps_tensor, n_mels, n_fft, device))
 }
 
@@ -770,5 +847,40 @@ mod tests {
         // Test padding
         let padded = pad_or_trim_audio(&audio, 5);
         assert_eq!(padded.samples, vec![1.0, 2.0, 3.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_compute_mel_from_samples_matches_audio_data() {
+        // 30 s of 440 Hz sine at 16 kHz mono — exercises a non-trivial mel pattern.
+        let samples: Vec<f32> = (0..480_000)
+            .map(|i| 0.5 * (2.0 * PI * 440.0 * i as f32 / 16000.0).sin())
+            .collect();
+
+        let audio = AudioData::new(samples.clone(), WHISPER_SAMPLE_RATE, 1);
+
+        let mel_via_audio = compute_mel_spectrogram::<burn_flex::Flex<f32>>(
+            &audio,
+            WHISPER_N_FFT,
+            WHISPER_HOP_LENGTH,
+            WHISPER_N_MELS,
+            &FlexDevice,
+        )
+        .unwrap();
+
+        let mel_via_raw = compute_mel_from_samples::<burn_flex::Flex<f32>>(
+            &samples,
+            WHISPER_N_FFT,
+            WHISPER_HOP_LENGTH,
+            WHISPER_N_MELS,
+            &FlexDevice,
+        )
+        .unwrap();
+
+        let a: Vec<f32> = mel_via_audio.to_data().to_vec().unwrap();
+        let b: Vec<f32> = mel_via_raw.to_data().to_vec().unwrap();
+        assert_eq!(a.len(), b.len(), "shape mismatch");
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert_eq!(x, y, "mismatch at index {i}");
+        }
     }
 }

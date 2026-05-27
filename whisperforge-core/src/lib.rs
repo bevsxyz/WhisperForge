@@ -21,6 +21,8 @@ pub mod stft_gpu;
 
 pub use attn_extract::forward_decoder_with_cross_attn;
 pub use audio::batch_mel_spectrograms;
+pub use audio::compute_mel_from_samples;
+pub use audio::prepare_centered_samples_raw;
 pub use audio_capture::{MicCapture, list_input_devices};
 pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
 pub use embed::extract_speaker_embedding;
