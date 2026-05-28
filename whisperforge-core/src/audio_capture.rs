@@ -4,11 +4,15 @@ use ringbuf::{
     HeapRb,
     traits::{Consumer, Producer, Split},
 };
+use rubato::audioadapter_buffers::direct::SequentialSlice;
+use rubato::{Fft, FixedSync, Resampler};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
+
+const RESAMPLER_CHUNK: usize = 1024;
 
 /// Captures audio from a microphone and resamples it to 16 kHz mono.
 pub struct MicCapture {
@@ -53,139 +57,103 @@ impl MicCapture {
             config.sample_format()
         );
 
-        let ring_raw_rb = HeapRb::<f32>::new(((native_sample_rate as usize / 1000) * 64).max(1024));
+        // Native-rate ring sized to a couple of seconds so callback bursts never block the
+        // audio thread. cpal callbacks typically deliver 10–40 ms per fire, so this is generous.
+        let ring_raw_rb = HeapRb::<f32>::new(((native_sample_rate as usize) * 2).max(4096));
         let (prod_raw, cons_raw) = ring_raw_rb.split();
-        let ring_raw_prod = Arc::new(Mutex::new(prod_raw));
-        let ring_raw_cons = Arc::new(Mutex::new(cons_raw));
 
-        let ring_16khz_rb = HeapRb::<f32>::new(32000);
+        let ring_16khz_rb = HeapRb::<f32>::new(32_000);
         let (prod_16khz, cons_16khz) = ring_16khz_rb.split();
-        let ring_16khz_prod = Arc::new(Mutex::new(prod_16khz));
         let ring_16khz_cons = Arc::new(Mutex::new(cons_16khz));
 
         let dropped_samples = Arc::new(AtomicU64::new(0));
 
-        // Spawn the resampling worker thread
-        let ring_raw_cons_resample = Arc::clone(&ring_raw_cons);
-        let ring_16khz_prod_resample = Arc::clone(&ring_16khz_prod);
+        // Spawn the resampling worker thread — moves `cons_raw` and `prod_16khz` in
+        // directly; ringbuf SPSC needs no synchronization.
         let dropped_samples_resample = Arc::clone(&dropped_samples);
         let native_sr = native_sample_rate;
 
         let resample_thread = thread::Builder::new()
             .name("audio-resample".to_string())
             .spawn(move || {
-                let mut input_buf = vec![0.0f32; 4096];
-                let mut output_buf = vec![0.0f32; 4096];
-
-                loop {
-                    let total_read = ring_raw_cons_resample
-                        .lock()
-                        .unwrap()
-                        .pop_slice(&mut input_buf);
-
-                    if total_read == 0 {
-                        thread::sleep(std::time::Duration::from_millis(1));
-                        continue;
-                    }
-
-                    // Simple linear interpolation resampling
-                    let ratio = 16000.0 / native_sr as f32;
-                    let mut out_idx = 0;
-                    let mut in_idx = 0.0f32;
-
-                    while out_idx < output_buf.len() && in_idx < total_read as f32 - 1.0 {
-                        let idx0 = in_idx.floor() as usize;
-                        let idx1 = (idx0 + 1).min(total_read - 1);
-                        let frac = in_idx - idx0 as f32;
-
-                        output_buf[out_idx] =
-                            input_buf[idx0] * (1.0 - frac) + input_buf[idx1] * frac;
-
-                        out_idx += 1;
-                        in_idx += 1.0 / ratio;
-                    }
-
-                    if out_idx > 0 {
-                        let written = ring_16khz_prod_resample
-                            .lock()
-                            .unwrap()
-                            .push_slice(&output_buf[..out_idx]);
-                        let dropped = out_idx - written;
-                        if dropped > 0 {
-                            dropped_samples_resample.fetch_add(dropped as u64, Ordering::Relaxed);
-                        }
-                    }
-                }
+                run_resample(native_sr, cons_raw, prod_16khz, dropped_samples_resample);
             })
             .context("Failed to spawn resample thread")?;
 
-        // Create the cpal input stream
-        let ring_raw_prod_callback = Arc::clone(&ring_raw_prod);
+        // Build the cpal input stream — `prod_raw` is moved into the matching arm's
+        // closure (cpal picks exactly one format, so the producer has exactly one owner)
+        // so no Arc<Mutex<>> is needed around the audio callback's producer.
         let dropped_samples_callback = Arc::clone(&dropped_samples);
 
         let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _info| {
-                    let mono: Vec<f32> = data
-                        .chunks(native_channels as usize)
-                        .map(|ch| ch.iter().sum::<f32>() / native_channels as f32)
-                        .collect();
-                    if let Ok(mut prod) = ring_raw_prod_callback.lock() {
+            cpal::SampleFormat::F32 => {
+                let mut prod = prod_raw;
+                let dropped_cb = dropped_samples_callback;
+                device.build_input_stream(
+                    &config.into(),
+                    move |data: &[f32], _info| {
+                        let mono: Vec<f32> = data
+                            .chunks_exact(native_channels as usize)
+                            .map(|ch| ch.iter().sum::<f32>() / native_channels as f32)
+                            .collect();
                         let written = prod.push_slice(&mono);
                         let dropped = mono.len() - written;
                         if dropped > 0 {
-                            dropped_samples_callback.fetch_add(dropped as u64, Ordering::Relaxed);
+                            dropped_cb.fetch_add(dropped as u64, Ordering::Relaxed);
                         }
-                    }
-                },
-                |err| tracing::error!("Stream error: {}", err),
-                None,
-            ),
-            cpal::SampleFormat::I16 => device.build_input_stream(
-                &config.into(),
-                move |data: &[i16], _info| {
-                    let mono: Vec<f32> = data
-                        .chunks(native_channels as usize)
-                        .map(|ch| {
-                            ch.iter().map(|&s| s as f32 / 32768.0).sum::<f32>()
-                                / native_channels as f32
-                        })
-                        .collect();
-                    if let Ok(mut prod) = ring_raw_prod_callback.lock() {
+                    },
+                    |err| tracing::error!("Stream error: {}", err),
+                    None,
+                )
+            }
+            cpal::SampleFormat::I16 => {
+                let mut prod = prod_raw;
+                let dropped_cb = dropped_samples_callback;
+                device.build_input_stream(
+                    &config.into(),
+                    move |data: &[i16], _info| {
+                        let mono: Vec<f32> = data
+                            .chunks_exact(native_channels as usize)
+                            .map(|ch| {
+                                ch.iter().map(|&s| s as f32 / 32_768.0).sum::<f32>()
+                                    / native_channels as f32
+                            })
+                            .collect();
                         let written = prod.push_slice(&mono);
                         let dropped = mono.len() - written;
                         if dropped > 0 {
-                            dropped_samples_callback.fetch_add(dropped as u64, Ordering::Relaxed);
+                            dropped_cb.fetch_add(dropped as u64, Ordering::Relaxed);
                         }
-                    }
-                },
-                |err| tracing::error!("Stream error: {}", err),
-                None,
-            ),
-            cpal::SampleFormat::U16 => device.build_input_stream(
-                &config.into(),
-                move |data: &[u16], _info| {
-                    let mono: Vec<f32> = data
-                        .chunks(native_channels as usize)
-                        .map(|ch| {
-                            ch.iter()
-                                .map(|&s| (s as f32 - 32768.0) / 32768.0)
-                                .sum::<f32>()
-                                / native_channels as f32
-                        })
-                        .collect();
-                    if let Ok(mut prod) = ring_raw_prod_callback.lock() {
+                    },
+                    |err| tracing::error!("Stream error: {}", err),
+                    None,
+                )
+            }
+            cpal::SampleFormat::U16 => {
+                let mut prod = prod_raw;
+                let dropped_cb = dropped_samples_callback;
+                device.build_input_stream(
+                    &config.into(),
+                    move |data: &[u16], _info| {
+                        let mono: Vec<f32> = data
+                            .chunks_exact(native_channels as usize)
+                            .map(|ch| {
+                                ch.iter()
+                                    .map(|&s| (s as f32 - 32_768.0) / 32_768.0)
+                                    .sum::<f32>()
+                                    / native_channels as f32
+                            })
+                            .collect();
                         let written = prod.push_slice(&mono);
                         let dropped = mono.len() - written;
                         if dropped > 0 {
-                            dropped_samples_callback.fetch_add(dropped as u64, Ordering::Relaxed);
+                            dropped_cb.fetch_add(dropped as u64, Ordering::Relaxed);
                         }
-                    }
-                },
-                |err| tracing::error!("Stream error: {}", err),
-                None,
-            ),
+                    },
+                    |err| tracing::error!("Stream error: {}", err),
+                    None,
+                )
+            }
             _ => bail!("Unsupported sample format"),
         }?;
 
@@ -204,6 +172,97 @@ impl MicCapture {
     pub fn stop(self) {
         drop(self._stream);
         drop(self._resample_thread);
+    }
+}
+
+/// Worker body: drain `cons_raw` at native rate, resample to 16 kHz mono with rubato,
+/// push into `prod_16khz`. Loops forever until the upstream ring is dropped (shutdown).
+fn run_resample(
+    native_sr: u32,
+    mut cons_raw: ringbuf::HeapCons<f32>,
+    mut prod_16khz: ringbuf::HeapProd<f32>,
+    dropped_samples: Arc<AtomicU64>,
+) {
+    // Fast path: device is already 16 kHz, just forward without resampling.
+    if native_sr == 16_000 {
+        let mut buf = vec![0.0f32; 4096];
+        loop {
+            let n = cons_raw.pop_slice(&mut buf);
+            if n == 0 {
+                thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            }
+            let written = prod_16khz.push_slice(&buf[..n]);
+            let dropped = n - written;
+            if dropped > 0 {
+                dropped_samples.fetch_add(dropped as u64, Ordering::Relaxed);
+            }
+        }
+    }
+
+    // FFT resampler: fixed input chunk, mono, 1.1× ratio headroom isn't required for synchronous.
+    let mut resampler = match Fft::<f32>::new(
+        native_sr as usize,
+        16_000,
+        RESAMPLER_CHUNK,
+        2,
+        1,
+        FixedSync::Input,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("rubato resampler construction failed ({native_sr} Hz → 16 kHz): {e}");
+            return;
+        }
+    };
+
+    let max_in = resampler.input_frames_max();
+    let max_out = resampler.output_frames_max();
+    let mut input_buf = vec![0.0f32; max_in];
+    let mut output_buf = vec![0.0f32; max_out];
+
+    loop {
+        let chunk_in = resampler.input_frames_next();
+        let mut filled = 0;
+        while filled < chunk_in {
+            let n = cons_raw.pop_slice(&mut input_buf[filled..chunk_in]);
+            if n == 0 {
+                thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            }
+            filled += n;
+        }
+
+        let in_adapter = match SequentialSlice::new(&input_buf[..chunk_in], 1, chunk_in) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!("rubato input adapter: {e:?}");
+                return;
+            }
+        };
+        let mut out_adapter = match SequentialSlice::new_mut(&mut output_buf[..max_out], 1, max_out)
+        {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!("rubato output adapter: {e:?}");
+                return;
+            }
+        };
+        let out_n = match resampler.process_into_buffer(&in_adapter, &mut out_adapter, None) {
+            Ok((_in_used, out_n)) => out_n,
+            Err(e) => {
+                tracing::error!("rubato resample failed: {e:?}");
+                return;
+            }
+        };
+
+        if out_n > 0 {
+            let written = prod_16khz.push_slice(&output_buf[..out_n]);
+            let dropped = out_n - written;
+            if dropped > 0 {
+                dropped_samples.fetch_add(dropped as u64, Ordering::Relaxed);
+            }
+        }
     }
 }
 
