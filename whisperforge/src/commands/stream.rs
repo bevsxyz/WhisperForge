@@ -48,8 +48,11 @@ pub struct StreamArgs {
     #[arg(long, default_value = "28.0")]
     pub max_window_secs: f32,
 
-    /// Stride (hop) size in seconds between windows (default 1.0)
-    #[arg(long, default_value = "1.0")]
+    /// Stride (hop) size in seconds between windows (default 2.0). Each stride triggers a
+    /// full re-encode + re-decode of the growing buffer; on tiny.en + CPU that costs ~1.7 s
+    /// per window, so 2.0 keeps the consumer ahead of real-time. Lower this only if your
+    /// hardware can sustain it (otherwise the cpal ring drops samples, logged to stderr).
+    #[arg(long, default_value = "2.0")]
     pub stride_secs: f32,
 
     /// VAD detection threshold (0.0–1.0, default 0.5)
@@ -64,8 +67,11 @@ pub struct StreamArgs {
     #[arg(long, default_value = "0.8")]
     pub punct_silence_secs: f32,
 
-    /// Number of previous tokens to carry over as context (default 60)
-    #[arg(long, default_value = "60")]
+    /// Number of previously-committed tokens to feed as <|prevtext|> on each window
+    /// (default 0 — disabled). Non-zero values can lock the decoder into hallucination
+    /// loops on quiet audio (the model keeps repeating the last phrase). Re-enable with
+    /// e.g. `--prompt-tokens 60` if you need topical continuity across utterances.
+    #[arg(long, default_value = "0")]
     pub prompt_tokens: usize,
 
     /// Output streaming results as NDJSON to stdout
@@ -332,9 +338,14 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
             let mut padded = window.samples.clone();
             padded.resize(WINDOW_SAMPLES, 0.0);
 
+            let t_mel_start = std::time::Instant::now();
             let mel = compute_mel_from_samples::<B>(&padded, 400, 160, 80, &device)
                 .context("compute mel")?;
+            let mel_ms = t_mel_start.elapsed().as_millis();
+
+            let t_enc_start = std::time::Instant::now();
             let encoder_out = model.forward_encoder(mel);
+            let enc_ms = t_enc_start.elapsed().as_millis();
 
             let ctx = DecodeContext {
                 prompt_tokens: prompt_ctx.prompt_tokens(),
@@ -349,8 +360,22 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
                 no_speech_threshold: 0.6,
             };
 
-            decode_window::<B>(&model, encoder_out, &ctx, &tokenizer, &device)
-                .context("decode window")?
+            let t_dec_start = std::time::Instant::now();
+            let out = decode_window::<B>(&model, encoder_out, &ctx, &tokenizer, &device)
+                .context("decode window")?;
+            let dec_ms = t_dec_start.elapsed().as_millis();
+
+            tracing::debug!(
+                window_secs = window.samples.len() as f32 / 16_000.0,
+                real_secs = window.real_samples as f32 / 16_000.0,
+                mel_ms,
+                enc_ms,
+                dec_ms,
+                total_ms = mel_ms + enc_ms + dec_ms,
+                "per-window latency"
+            );
+
+            out
         } else {
             Vec::new()
         };
