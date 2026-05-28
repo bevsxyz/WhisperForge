@@ -24,6 +24,9 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Cache Cargo registry and build
         uses: actions/cache@v4
         with:
