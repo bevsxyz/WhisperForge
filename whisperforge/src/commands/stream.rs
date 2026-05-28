@@ -9,12 +9,12 @@ use anyhow::{Context, Result};
 use burn::tensor::backend::Backend;
 use burn_flex::{Flex, FlexDevice};
 use clap::Parser;
-use cpal::traits::{DeviceTrait, HostTrait};
 use tokenizers::Tokenizer;
 use whisperforge_core::{
     CaptureSource, Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, FakeMic,
     MicCapture, PromptContext, SileroVad, Whisper, WindowConfig, compute_mel_from_samples,
-    decode_window, ensure_silero_model, stream_decode::DecodeContext,
+    decode_window, ensure_silero_model, list_input_devices as core_list_input_devices,
+    stream_decode::DecodeContext,
 };
 
 use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
@@ -498,14 +498,14 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
 }
 
 fn list_input_devices() -> Result<()> {
-    for host_id in cpal::ALL_HOSTS {
-        let host = cpal::host_from_id(*host_id).context("instantiate host")?;
-        println!("Host: {}", host.id().name());
-        let devices = host.input_devices().context("enumerate input devices")?;
-        for device in devices {
-            let name = device.name().unwrap_or_else(|_| "<unknown>".to_string());
-            println!("  - {name}");
+    let devices = core_list_input_devices()?;
+    let mut current_host: Option<&str> = None;
+    for (host, name) in &devices {
+        if current_host != Some(host.as_str()) {
+            println!("Host: {host}");
+            current_host = Some(host.as_str());
         }
+        println!("  - {name}");
     }
     Ok(())
 }
