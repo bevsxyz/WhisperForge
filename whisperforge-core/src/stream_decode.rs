@@ -33,9 +33,10 @@ pub struct DecodeContext<'a> {
     pub no_speech_token: u32,
     /// First timestamp token ID (50364 for all current Whisper models).
     pub timestamp_begin_token: u32,
-    /// `<|notimestamps|>` token ID. When pushed as the 4th init token the decoder produces
-    /// plain text (no timestamp tokens between words), matching the one-shot transcribe
-    /// path and producing far more reliable greedy output on short windows.
+    /// `<|notimestamps|>` token ID. Pushed as the 4th init token so the decoder produces
+    /// plain text (no per-token timestamps between words). Required for greedy decode to
+    /// produce coherent content on this checkpoint — greedy + timestamps-on emits mostly
+    /// timestamps with little content even with `ApplyTimestampRules`-style filtering.
     pub notimestamps_token: u32,
     /// Hard cap on new tokens generated (not counting prompt or init tokens).
     pub max_new_tokens: usize,
@@ -48,10 +49,14 @@ pub struct DecodeContext<'a> {
 /// `encoder_out` is consumed by `KvCache::new`; clone before calling if you need it again.
 ///
 /// `<|notimestamps|>` is pushed as the fourth init token so the decoder emits plain text
-/// (no per-token timestamp tokens between words). This matches the one-shot transcribe
-/// path and gives reliable greedy output on the short windows used by streaming; with
-/// timestamps enabled the model frequently emits a lone `<|0.00|>` then EOT on short or
-/// uncertain windows.
+/// (no per-token timestamps between words). This matches the one-shot transcribe path and
+/// gives reliable greedy output on short windows. The original plan was to leave timestamps
+/// enabled so the streaming caller could anchor buffer trims at committed-token boundaries
+/// — but empirically, greedy decode on tiny.en with timestamps on emits mostly timestamps
+/// and little content, even with `ApplyTimestampRules`-style logit filtering. Reliable
+/// timestamps in streaming would require temperature-fallback sampling (like the one-shot
+/// `HybridDecoder`), which is out of scope here. The streaming caller uses a stride-based
+/// trim heuristic on cap-hit instead — see `whisperforge/src/commands/stream.rs`.
 pub fn decode_window<B: Backend>(
     model: &Whisper<B>,
     encoder_out: Tensor<B, 3>,
@@ -78,8 +83,9 @@ pub fn decode_window<B: Backend>(
     }
 
     // Feed the four init tokens. `<|notimestamps|>` is included so the greedy decoder
-    // produces plain text (matching the one-shot transcribe path). Without it, the model
-    // emits a single `<|0.00|>` timestamp then EOT for short windows.
+    // produces plain text (matching the one-shot transcribe path). With timestamps enabled,
+    // greedy decode on this checkpoint emits mostly timestamps with little content even
+    // under `ApplyTimestampRules`-style filtering — see function docstring.
     let init = [
         ctx.sot_token,
         ctx.language_token,

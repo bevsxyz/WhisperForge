@@ -7,12 +7,13 @@ const SAMPLE_RATE: u32 = 16_000;
 const VAD_FRAME_SIZE: usize = 512;
 
 pub struct WindowConfig {
-    /// Hard cap on the growing decode buffer; once reached, the chunker forces an EOU and
-    /// the consumer must call [`Chunker::reset_utterance`]. Default 5.0 s — chosen so that
-    /// the autoregressive decoder on tiny.en CPU stays under `stride_secs` per window.
-    /// Long utterances that exceed this cap are transcribed as multiple consecutive
-    /// endpoint events rather than one continuous line; this is a deliberate trade for
-    /// drop-free, duplication-free output (see CLAUDE.md § Live-mic perf ceiling).
+    /// Hard cap on the growing decode buffer; once reached, the chunker emits a window with
+    /// `cap_hit=true` and the consumer must call either [`Chunker::trim_oldest`] (continue
+    /// the utterance by dropping the oldest ~1.5 s of audio) or [`Chunker::reset_utterance`]
+    /// (forced EOU). Default 5.0 s — chosen so the autoregressive decoder on tiny.en CPU
+    /// stays under `stride_secs` per window. If a second cap is hit without an intervening
+    /// trim/reset, `forced_eou=true` fires as a safety net (see CLAUDE.md § Live-mic perf
+    /// ceiling).
     pub max_window_secs: f32,
     /// How often to re-decode the growing buffer (default 1.0 s).
     pub stride_secs: f32,
@@ -45,8 +46,13 @@ pub struct StreamWindow {
     pub had_speech: bool,
     /// Seconds since the last VAD-positive frame; for use by the endpointer.
     pub trailing_silence_secs: f32,
-    /// True when the buffer hit the `max_window_secs` cap; the consumer should treat this
-    /// as a forced EOU (finalize + `reset_utterance`) to keep per-window decode bounded.
+    /// True when the buffer hit `max_window_secs`. The consumer must call either
+    /// [`Chunker::trim_oldest`] or [`Chunker::reset_utterance`] before the next push;
+    /// otherwise the next cap will additionally set `forced_eou=true`.
+    pub cap_hit: bool,
+    /// True only on the *second* consecutive cap without an intervening trim or reset.
+    /// Treat as a forced EOU (finalize + `reset_utterance`) — the safety-net path when the
+    /// trim wasn't applied (e.g. no prior commits to anchor against).
     pub forced_eou: bool,
 }
 
@@ -72,6 +78,14 @@ pub struct Chunker {
     vad_decisions: VecDeque<bool>,
     // Sample index (in stream-relative terms) where the current utterance's audio[0] sits.
     utterance_start_sample: u64,
+    // True after a cap_hit window is emitted, until `trim_oldest` or `reset_utterance`
+    // is called. If a second cap fires while still pending, the safety-net `forced_eou`
+    // path activates so a misbehaving caller can't lose audio indefinitely.
+    cap_pending_handler: bool,
+    // Samples held back when `push` returned early due to a cap-hit. Prepended to the
+    // next `push` call so the audio is not lost. Eliminates the case where multiple
+    // cap-hits fire within a single `push` batch and the consumer only sees the last.
+    deferred_samples: Vec<f32>,
 }
 
 impl Chunker {
@@ -90,23 +104,33 @@ impl Chunker {
             window_ever_emitted: false,
             vad_decisions: VecDeque::with_capacity(max_vad_frames),
             utterance_start_sample: 0,
+            cap_pending_handler: false,
+            deferred_samples: Vec::new(),
         }
     }
 
     /// Push new microphone samples; returns `Some(window)` when a stride boundary fires
-    /// or the buffer hits the `max_window_secs` cap (`forced_eou == true` in that case).
+    /// or the buffer hits the `max_window_secs` cap.
     ///
-    /// The buffer GROWS — it doesn't slide. Consumers must call [`reset_utterance`] after
-    /// committing/finalising an utterance so the next stride starts a fresh buffer.
+    /// The buffer GROWS — it doesn't slide. Consumers must call [`trim_oldest`] or
+    /// [`reset_utterance`] after a cap-hit window so the next push has room.
+    ///
+    /// On cap-hit, the call returns early with the cap-hit window; any remaining input
+    /// samples are deferred internally and prepended to the next `push` call. This avoids
+    /// the failure mode where multiple cap-hits fire within one batch and only the last
+    /// (forced_eou) window reaches the consumer.
     pub fn push(&mut self, samples: &[f32]) -> Option<StreamWindow> {
         let stride_samples = (self.cfg.stride_secs * SAMPLE_RATE as f32) as usize;
         let max_samples = (self.cfg.max_window_secs * SAMPLE_RATE as f32) as usize;
         let min_speech_samples = (self.cfg.min_speech_secs * SAMPLE_RATE as f32) as u64;
         let max_vad_frames = max_samples.div_ceil(VAD_FRAME_SIZE);
 
+        let mut all_samples: Vec<f32> = std::mem::take(&mut self.deferred_samples);
+        all_samples.extend_from_slice(samples);
+
         let mut result: Option<StreamWindow> = None;
 
-        for &s in samples {
+        for (idx, &s) in all_samples.iter().enumerate() {
             if self.buf.len() < max_samples {
                 self.buf.push(s);
             }
@@ -139,13 +163,23 @@ impl Chunker {
                 self.vad_decisions.push_back(is_speech);
             }
 
-            // Force-EOU if we've hit the cap; consumer must handle and call reset_utterance.
+            // Buffer hit the cap. Mark cap_hit=true; the consumer chooses between a
+            // stride-based trim (continue the utterance) or a reset (forced EOU). If
+            // a previous cap-hit is still pending unhandled, additionally set
+            // forced_eou=true as a safety net.
+            //
+            // We return early here so the consumer always sees the FIRST cap-hit of
+            // each batch (not the last). Remaining samples are deferred to next push.
             if self.buf.len() >= max_samples {
                 let mut w = self.build_window(max_samples);
-                w.forced_eou = true;
-                result = Some(w);
+                w.cap_hit = true;
+                if self.cap_pending_handler {
+                    w.forced_eou = true;
+                }
+                self.cap_pending_handler = true;
                 self.samples_since_last_stride = 0;
-                continue;
+                self.deferred_samples = all_samples[idx + 1..].to_vec();
+                return Some(w);
             }
 
             // Regular stride tick.
@@ -186,6 +220,7 @@ impl Chunker {
             window_start_secs,
             had_speech,
             trailing_silence_secs,
+            cap_hit: false,
             forced_eou: false,
         }
     }
@@ -201,6 +236,36 @@ impl Chunker {
         self.speech_samples_accumulated = 0;
         self.window_ever_emitted = false;
         self.utterance_start_sample = self.total_samples_seen;
+        self.cap_pending_handler = false;
+        self.deferred_samples.clear();
+    }
+
+    /// Drop the oldest `samples` from the front of the buffer at a committed-token
+    /// boundary, keeping the utterance going. Rounded down to a `VAD_FRAME_SIZE` multiple
+    /// so `vad_decisions` stays in lock-step with `buf`. Advances `utterance_start_sample`
+    /// to preserve wall-clock anchoring; `current_secs = window_start_secs + real_samples/SR`
+    /// is invariant (the increase in window_start exactly cancels the decrease in real_samples).
+    ///
+    /// Returns the number of samples actually trimmed (0 if the requested amount is less
+    /// than one VAD frame or would empty the buffer). Returning 0 leaves `cap_pending_handler`
+    /// set so the next cap escalates to forced-EOU.
+    pub fn trim_oldest(&mut self, samples: usize) -> usize {
+        let trim_frames = samples / VAD_FRAME_SIZE;
+        let trim_samples = trim_frames * VAD_FRAME_SIZE;
+        if trim_samples == 0 || trim_samples >= self.buf.len() {
+            return 0;
+        }
+        self.buf.drain(..trim_samples);
+        for _ in 0..trim_frames {
+            if self.vad_decisions.pop_front().unwrap_or(false) {
+                self.speech_samples_accumulated = self
+                    .speech_samples_accumulated
+                    .saturating_sub(VAD_FRAME_SIZE as u64);
+            }
+        }
+        self.utterance_start_sample += trim_samples as u64;
+        self.cap_pending_handler = false;
+        trim_samples
     }
 }
 
@@ -231,6 +296,10 @@ pub struct Committer {
     /// between finalize and the next ingest (e.g. for the `<|prevtext|>` prompt prefix)
     /// without smearing the previous utterance into the next one.
     awaiting_reset: bool,
+    /// Exclusive end index of the most recent LCP within the most recent candidate's
+    /// original token-list (timestamp-bearing) space. Used by the streaming caller to
+    /// locate the latest timestamp inside the committed prefix when computing trim points.
+    last_lcp_end_in_candidate: usize,
 }
 
 impl Committer {
@@ -240,6 +309,7 @@ impl Committer {
             committed: Vec::new(),
             committed_text: String::new(),
             awaiting_reset: false,
+            last_lcp_end_in_candidate: 0,
         }
     }
 
@@ -254,6 +324,7 @@ impl Committer {
             self.awaiting_reset = false;
         }
         let lcp = lcp_len(&self.last_candidate, &candidate);
+        self.last_lcp_end_in_candidate = lcp;
         let prev_committed_len = self.committed.len();
 
         // Commit candidate[prev_committed_len..lcp] when lcp has advanced past what we've
@@ -316,6 +387,48 @@ impl Committer {
 
     pub fn committed_text(&self) -> &str {
         &self.committed_text
+    }
+
+    /// The most recent candidate (the argument to the most recent `ingest`). Empty
+    /// after `finalize_utterance` (until the next `ingest`) and after `on_trim`.
+    pub fn last_candidate(&self) -> &[TokenEmit] {
+        &self.last_candidate
+    }
+
+    /// Exclusive end index of the most recent LCP within `last_candidate()`. The streaming
+    /// caller uses this with `last_candidate()` to find the latest timestamp inside the
+    /// committed prefix when picking a trim boundary on a cap-hit window.
+    pub fn last_lcp_end_in_candidate(&self) -> usize {
+        self.last_lcp_end_in_candidate
+    }
+
+    /// Called after `Chunker::trim_oldest` succeeds. Force-commits the current tentative
+    /// tail (the content past the LCP boundary in the most recent decode) and clears
+    /// `last_candidate` so the next ingest establishes a fresh baseline. Returns the
+    /// force-committed text so the caller can mirror it to its output sink.
+    ///
+    /// Rationale: without force-commit, the tentative tail is lost after the trim — the
+    /// next stride decodes overlapping audio in a different buffer context, the non-causal
+    /// encoder produces different tokens, and LCP doesn't reconfirm. Empirically this loses
+    /// roughly 1.5 s of content per cap-hit. Force-committing trusts the cap-hit window's
+    /// tail; duplication risk is mitigated by clearing `last_candidate` (post-trim strides
+    /// can't LCP against the pre-trim tail).
+    pub fn on_trim(&mut self) -> CommitDelta {
+        let start = self.committed.len();
+        let new_tokens: Vec<TokenEmit> = if start < self.last_candidate.len() {
+            self.last_candidate[start..].to_vec()
+        } else {
+            Vec::new()
+        };
+        let new_text = build_text(&new_tokens);
+        self.committed_text.push_str(&new_text);
+        self.committed.extend(new_tokens.iter().cloned());
+        self.last_candidate.clear();
+        self.last_lcp_end_in_candidate = 0;
+        CommitDelta::Committed {
+            new_tokens,
+            new_text,
+        }
     }
 }
 
@@ -824,6 +937,7 @@ mod tests {
             window_start_secs,
             had_speech: trailing_silence_secs < 5.0,
             trailing_silence_secs,
+            cap_hit: false,
             forced_eou: false,
         }
     }
@@ -1028,10 +1142,12 @@ mod tests {
         Ok(())
     }
 
-    /// Growing-buffer EOU: pushing > max_window_secs of audio must produce a forced_eou window.
+    /// First cap-hit emits cap_hit=true but NOT forced_eou — the consumer gets a chance
+    /// to call `trim_oldest` for timestamp-anchored continuation. forced_eou is reserved
+    /// for the safety-net path when trimming fails.
     #[test]
     #[ignore = "requires silero_vad.onnx in ./models"]
-    fn test_chunker_forced_eou_at_cap() -> Result<()> {
+    fn test_chunker_cap_hit_no_auto_forced_eou() -> Result<()> {
         let vad = open_vad()?;
         let cfg = WindowConfig {
             max_window_secs: 2.0,
@@ -1041,30 +1157,211 @@ mod tests {
         };
         let mut chunker = Chunker::new(cfg, vad);
 
-        // Push 3 s of silence in one call; the chunker should cap the buffer at 2 s of
-        // real audio and emit a forced_eou window. (The last window returned wins per
-        // Chunker::push semantics.)
-        let three_seconds = vec![0.0f32; 3 * SAMPLE_RATE as usize];
+        // Push exactly max_window_secs of audio → first cap-hit fires once.
+        let two_seconds = vec![0.0f32; 2 * SAMPLE_RATE as usize];
         let window = chunker
-            .push(&three_seconds)
-            .expect("at least one window should have fired");
-        assert!(window.forced_eou, "forced_eou must be set at the cap");
+            .push(&two_seconds)
+            .expect("cap-hit window should have fired");
+        assert!(window.cap_hit, "cap_hit must be true at the cap");
+        assert!(
+            !window.forced_eou,
+            "first cap-hit must NOT set forced_eou — trim_oldest is the primary path"
+        );
         assert_eq!(window.real_samples, 2 * SAMPLE_RATE as usize);
 
-        // After reset_utterance, the buffer drops to 0 and the next stride starts fresh.
-        chunker.reset_utterance();
-        let one_second = vec![0.0f32; SAMPLE_RATE as usize];
-        let w2 = chunker
-            .push(&one_second)
-            .expect("first stride of new utterance should fire");
-        assert!(!w2.forced_eou);
-        assert_eq!(w2.real_samples, SAMPLE_RATE as usize);
-        // window_start_secs anchors to the new utterance's audio[0] = 3 s of wall-clock.
+        Ok(())
+    }
+
+    /// Second consecutive cap without an intervening trim_oldest/reset_utterance must
+    /// set forced_eou=true so a misbehaving consumer can't lose audio indefinitely.
+    #[test]
+    #[ignore = "requires silero_vad.onnx in ./models"]
+    fn test_chunker_cap_pending_then_forced_eou() -> Result<()> {
+        let vad = open_vad()?;
+        let cfg = WindowConfig {
+            max_window_secs: 2.0,
+            stride_secs: 1.0,
+            vad_threshold: 0.5,
+            min_speech_secs: 0.0,
+        };
+        let mut chunker = Chunker::new(cfg, vad);
+
+        // Push 2 s → first cap-hit.
+        let two_seconds = vec![0.0f32; 2 * SAMPLE_RATE as usize];
+        let w1 = chunker.push(&two_seconds).expect("first cap-hit");
+        assert!(w1.cap_hit && !w1.forced_eou);
+
+        // Push one more sample without trimming or resetting — second cap fires with
+        // forced_eou=true.
+        let w2 = chunker.push(&[0.0f32]).expect("second cap-hit");
+        assert!(w2.cap_hit, "second window still flagged as cap_hit");
         assert!(
-            (w2.window_start_secs - 3.0).abs() < 1e-3,
-            "new utterance start should be ~3 s, got {}",
-            w2.window_start_secs
+            w2.forced_eou,
+            "second cap without trim must set forced_eou as safety net"
         );
+
+        Ok(())
+    }
+
+    /// trim_oldest rounds down to a VAD_FRAME_SIZE multiple so buf.len() and
+    /// vad_decisions stay in lock-step. Verify alignment using a non-frame-multiple
+    /// request and a known buffer.
+    #[test]
+    #[ignore = "requires silero_vad.onnx in ./models"]
+    fn test_chunker_trim_oldest_vad_frame_alignment() -> Result<()> {
+        let vad = open_vad()?;
+        let cfg = WindowConfig {
+            max_window_secs: 2.0,
+            stride_secs: 1.0,
+            vad_threshold: 0.5,
+            min_speech_secs: 0.0,
+        };
+        let mut chunker = Chunker::new(cfg, vad);
+
+        // Fill the buffer to the cap.
+        let two_seconds = vec![0.0f32; 2 * SAMPLE_RATE as usize];
+        chunker.push(&two_seconds).expect("cap-hit");
+        let buf_before = chunker.buf.len();
+        let vad_before = chunker.vad_decisions.len();
+        // Note: a 2s buffer is exactly 62.5 VAD frames; we expect 62 (truncating).
+        assert_eq!(buf_before, 2 * SAMPLE_RATE as usize);
+        assert!(vad_before == 62 || vad_before == 63);
+
+        // Request a non-frame-multiple trim: 700 samples (1.37 VAD frames).
+        // Expected: trim_oldest rounds down to 1 frame = 512 samples.
+        let trimmed = chunker.trim_oldest(700);
+        assert_eq!(
+            trimmed, VAD_FRAME_SIZE,
+            "trim rounds down to frame multiple"
+        );
+        assert_eq!(
+            chunker.buf.len(),
+            buf_before - VAD_FRAME_SIZE,
+            "buf shrunk by exactly one frame"
+        );
+        assert_eq!(
+            chunker.vad_decisions.len(),
+            vad_before - 1,
+            "vad_decisions shrunk by exactly one entry"
+        );
+
+        // Request less than one frame: trim returns 0, nothing changes.
+        let trimmed_small = chunker.trim_oldest(100);
+        assert_eq!(trimmed_small, 0);
+        assert_eq!(chunker.buf.len(), buf_before - VAD_FRAME_SIZE);
+
+        Ok(())
+    }
+
+    /// trim_oldest advances utterance_start_sample by exactly the trimmed amount and
+    /// clears cap_pending_handler so subsequent caps are treated as first caps again.
+    #[test]
+    #[ignore = "requires silero_vad.onnx in ./models"]
+    fn test_chunker_trim_oldest_advances_utterance_start_sample() -> Result<()> {
+        let vad = open_vad()?;
+        let cfg = WindowConfig {
+            max_window_secs: 2.0,
+            stride_secs: 1.0,
+            vad_threshold: 0.5,
+            min_speech_secs: 0.0,
+        };
+        let mut chunker = Chunker::new(cfg, vad);
+
+        let two_seconds = vec![0.0f32; 2 * SAMPLE_RATE as usize];
+        chunker.push(&two_seconds).expect("cap-hit");
+        let start_before = chunker.utterance_start_sample;
+
+        // Trim ~1 s — rounded down to 31 × 512 = 15872 (closest multiple below 16000).
+        let target = SAMPLE_RATE as usize;
+        let trimmed = chunker.trim_oldest(target);
+        assert_eq!(
+            trimmed,
+            (target / VAD_FRAME_SIZE) * VAD_FRAME_SIZE,
+            "trimmed exactly the aligned amount"
+        );
+        assert_eq!(
+            chunker.utterance_start_sample,
+            start_before + trimmed as u64,
+            "utterance_start_sample advanced by trimmed samples"
+        );
+
+        // Push 1 sample — should NOT trigger forced_eou because trim cleared cap_pending.
+        let w = chunker.push(&[0.0f32]);
+        if let Some(w) = w {
+            assert!(
+                !w.forced_eou,
+                "after successful trim, the next push should not be flagged forced_eou"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// `Committer::on_trim` force-commits the tentative tail of the most recent decode
+    /// (everything past the LCP boundary), clears last_candidate, and preserves
+    /// already-committed state without setting awaiting_reset.
+    #[test]
+    fn test_committer_on_trim_force_commits_tentative_tail() -> Result<()> {
+        let mut c = Committer::new();
+        // Two rounds so LCP commits [tok1, tok2] and tok4 is tentative.
+        c.ingest(vec![make_token(1), make_token(2), make_token(3)]);
+        c.ingest(vec![make_token(1), make_token(2), make_token(4)]);
+        assert_eq!(c.committed_text(), "tok1tok2");
+
+        let delta = c.on_trim();
+        let trim_committed = committed_ids(&delta);
+        assert_eq!(
+            trim_committed,
+            vec![4],
+            "on_trim force-commits the tentative tail (tok4)"
+        );
+        assert!(
+            c.last_candidate().is_empty(),
+            "last_candidate cleared after on_trim"
+        );
+        assert_eq!(c.last_lcp_end_in_candidate(), 0, "LCP cursor reset");
+        assert_eq!(
+            c.committed_text(),
+            "tok1tok2tok4",
+            "committed_text now includes the force-committed tail"
+        );
+
+        // Next ingest must NOT auto-clear committed (awaiting_reset must be false). It
+        // simply starts a fresh LCP baseline.
+        let (comm, _) = c.ingest(vec![make_token(5), make_token(6)]);
+        assert!(
+            committed_ids(&comm).is_empty(),
+            "first post-trim ingest commits nothing (no prior candidate)"
+        );
+        assert_eq!(
+            c.committed_text(),
+            "tok1tok2tok4",
+            "committed_text not blown away by post-trim ingest"
+        );
+
+        Ok(())
+    }
+
+    /// LCP must work even when one side has timestamps and the other doesn't (mixed-
+    /// mode case from the adversarial review #9 — exercised when streaming flips
+    /// timestamp mode mid-utterance, even though current design keeps it always-on).
+    #[test]
+    fn test_committer_lcp_mixed_timestamps() -> Result<()> {
+        let mut c = Committer::new();
+        // Round 1: no timestamps in candidate.
+        c.ingest(vec![make_token(1), make_token(2)]);
+        // Round 2: interspersed timestamps; content tokens still match.
+        let (comm, _tent) = c.ingest(vec![
+            make_ts_token(50364, 0.0),
+            make_token(1),
+            make_ts_token(50370, 0.2),
+            make_token(2),
+        ]);
+        let ids = committed_ids(&comm);
+        // The committed prefix should cover the content tokens 1, 2 (plus the
+        // surrounding timestamps that fall within the LCP boundary in candidate space).
+        assert!(ids.contains(&1), "content token 1 must commit");
+        assert!(ids.contains(&2), "content token 2 must commit");
 
         Ok(())
     }

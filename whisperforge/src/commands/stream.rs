@@ -362,9 +362,9 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
                 notimestamps_token,
                 timestamp_begin_token,
                 // Cap autoregressive decode work per window. At ~100 ms/token on tiny.en CPU,
-                // 32 bounds worst-case window cost at ~3.2 s — comfortable headroom over
-                // the 5 s growing buffer's natural ~25-token ceiling (real speech rarely
-                // exceeds ~10 tokens/s). Whisper loop-failure modes self-terminate in ~3 s.
+                // 32 bounds worst-case window cost at ~3.2 s — comfortable headroom over the
+                // 5 s growing buffer's natural ~25-token ceiling. Whisper loop-failure modes
+                // self-terminate in ~3 s.
                 max_new_tokens: 32,
                 no_speech_threshold: 0.6,
             };
@@ -428,6 +428,52 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
             chunker.reset_utterance();
             utterance_committed.clear();
             utterance_started = false;
+        } else if window.cap_hit {
+            // Stride-based buffer trim: drop the oldest ~max_window/2 samples and clear
+            // the committer's last_candidate so the next stride establishes a fresh
+            // baseline. This keeps the utterance going as one continuous commit stream
+            // without an endpoint event at the cap.
+            //
+            // We trim only when the committer has finalized at least some content this
+            // utterance (committed_tokens non-empty) — otherwise the trim could discard
+            // audio the decoder hasn't yet produced stable output for. If the trim path
+            // is unavailable, leave cap_pending_handler set so the next cap escalates
+            // to forced_eou (the safety-net branch above).
+            //
+            // The trim point is intentionally NOT timestamp-anchored: with `<|notimestamps|>`
+            // in the streaming decode init, the model doesn't emit segment timestamps in
+            // greedy mode. A timestamp-anchored design was prototyped but greedy decode
+            // on tiny.en with timestamps on emits mostly timestamps and little content.
+            // Half-buffer trim is the pragmatic alternative — accepts one "wasted" stride
+            // post-trim (LCP starts fresh) in exchange for long-form continuity.
+            // Trim 1.5 s — empirically the sweet spot. Larger trim (e.g. half-buffer)
+            // shrinks the post-trim overlap, the non-causal encoder produces different
+            // tokens for short vs. long buffers of the same audio, and LCP regresses at
+            // the seam (no commits between caps). 1.5 s leaves 3.5 s of overlap which is
+            // enough for stable LCP commits.
+            let target_samples = (1.5_f32 * 16_000.0) as usize;
+            let has_commits = !committer.committed_tokens().is_empty();
+            let trimmed = if has_commits {
+                chunker.trim_oldest(target_samples)
+            } else {
+                0
+            };
+
+            if trimmed > 0 {
+                let trim_delta = committer.on_trim();
+                if let CommitDelta::Committed { ref new_text, .. } = trim_delta {
+                    if !new_text.is_empty() {
+                        utterance_committed.push_str(new_text);
+                        sink.on_commit(new_text, window.window_start_secs)?;
+                    }
+                }
+                tracing::debug!(trimmed_samples = trimmed, "cap-hit trim applied");
+            } else {
+                tracing::debug!(
+                    has_commits,
+                    "cap-hit trim skipped (no prior commits); next cap will force EOU"
+                );
+            }
         }
     }
 
