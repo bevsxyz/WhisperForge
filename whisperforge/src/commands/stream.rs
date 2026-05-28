@@ -44,8 +44,12 @@ pub struct StreamArgs {
     pub list_input_devices: bool,
 
     /// Hard cap on the growing decode buffer in seconds; forces an EOU at the cap to keep
-    /// Whisper's 30 s decoder context safe (default 28.0).
-    #[arg(long, default_value = "28.0")]
+    /// Whisper's 30 s decoder context safe (default 10.0). Caps at 10 s by default because
+    /// tiny.en's autoregressive decoder generates ~10 tokens/s of speech at ~100 ms/token on
+    /// CPU — a 10 s utterance decodes in ~10 s wall-clock, already > any reasonable stride.
+    /// Longer utterances cause unrecoverable consumer-side audio drops. Raise this only if
+    /// you have hardware fast enough that per-window decode stays under `--stride-secs`.
+    #[arg(long, default_value = "10.0")]
     pub max_window_secs: f32,
 
     /// Stride (hop) size in seconds between windows (default 2.0). Each stride triggers a
@@ -356,7 +360,12 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
                 no_speech_token,
                 notimestamps_token,
                 timestamp_begin_token,
-                max_new_tokens: 128,
+                // Cap autoregressive decode work per window. At ~100 ms/token on tiny.en CPU,
+                // this bounds worst-case window cost at ~5 s. Whisper loop-failure modes
+                // (which previously ran out to 128 tokens and blocked the consumer for 10+ s)
+                // now self-terminate in ~5 s. Real speech rarely emits more than ~10 tokens
+                // per second so for `max_window_secs=10` this covers normal utterances.
+                max_new_tokens: 48,
                 no_speech_threshold: 0.6,
             };
 

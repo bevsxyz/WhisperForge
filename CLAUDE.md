@@ -32,6 +32,14 @@ cargo run --release -p whisperforge -- convert --model-id openai/whisper-tiny.en
 # List converted models under ./models (override with --models-dir or WF_MODELS_DIR)
 cargo run --release -p whisperforge -- list-models
 
+# Stream realtime transcription from microphone
+cargo run --release -p whisperforge -- stream --model tiny_en_converted
+
+# Stream from file (synthetic mic, offline speed, JSON output)
+cargo run --release -p whisperforge -- stream --model tiny_en_converted \
+  --from-file whisperforge-core/tests/data/ljspeech_sample.wav \
+  --no-realtime --json
+
 # Build with native CUDA (requires CUDA toolkit + nvcc on host)
 cargo build --release -p whisperforge --features cuda
 wforge transcribe -a audio.wav -m tiny_en_converted --device cuda
@@ -120,7 +128,7 @@ Key files in `whisperforge-core/src/`:
 
 ## Roadmap
 
-Phases 1–7 + A–B + B.5 + C + E complete. Phase D (WASM) deferred. **Next: Phase F = streaming realtime.**
+Phases 1–7 + A–B + B.5 + C + E + F complete. Phase D (WASM) deferred.
 
 ### Phase B.5 — CubeCL Mel Pipeline ✅ COMPLETE
 
@@ -156,9 +164,20 @@ Goal was to clean the crate / CLI surface before streaming work. Targets 0.4.0 (
 - ⏸ Commit 6 (VRAM-aware encoder-batch auto-tune) — **deferred**. Heuristics had a poor cost/risk ratio (extra deps for sysinfo + wgpu adapter probe + WSL/integrated-GPU reporting quirks vs. a modest UX win nobody had asked for). Users override with `--encoder-batch-size` for now.
 - ⏸ Commit 7 (Windows wgpu runtime fallback) — **deferred**. Upstream `windows`-crate version conflict between wgpu-hal and gpu-allocator is *compile-time*; no runtime probe can rescue it. Windows still ships CPU-only via release.yml `--no-default-features`. Revisit when `grep -A1 'name = "windows"' Cargo.lock` shows one version.
 
-### Phase F — Streaming Realtime ⬜ NEXT
+### Phase F — Streaming Realtime ✅ COMPLETE
 
-Token-level output, mic input via `cpal`, ring-buffer chunking, KV-cache across windows. Headline goal: end-to-end realtime ASR. Subsequent phases (EOU detection, denoising, Moonshine) become tractable once the streaming framework lands.
+End-to-end realtime ASR: `cpal` mic input → Silero VAD gating (32 ms frames, ONNX) → sliding-window chunker (5 s window / 1 s stride) → per-window encode + greedy decode → LocalAgreement-2 committer (longest stable prefix across successive decodes) → silence + punctuation endpointer → `<|prevtext|>` prompt context carried across utterances → output sinks: crossterm terminal UI (committed / tentative line), NDJSON (`--json`), WAV recorder (`--record-to`), transcript file (`--transcript-to`). Synthetic-mic (`--from-file --no-realtime`) enables offline testing and CI without a physical device.
+
+- `cpal` mic input → `rubato`-resampled 16 kHz mono ring buffer
+- Silero VAD gates the sliding window; only speech frames drive encoder forwards
+- LocalAgreement-2 committer: tokens stable across two consecutive windows are permanently committed; remainder is tentative until confirmed
+- Silence + punctuation endpointer fires EOU at configurable thresholds (`--silence-secs`, `--punct-silence-secs`)
+- `<|prevtext|>` prompt prefix is opt-in (`--prompt-tokens 60`) — disabled by default since carrying prevtext on every window biases the decoder into hallucination loops on quiet audio (the classic `*sigh* *sigh* *sigh*` / `I'm going to do something.` failure mode). Matches faster-whisper's `condition_on_previous_text=False` default for streaming.
+- `--from-file <wav> [--no-realtime]` swaps mic for a WAV feeder — use this on WSL2 until PulseAudio is bridged
+
+**WSL2 note:** `cpal` on WSL2 requires a PulseAudio bridge. Use `--from-file` for all testing on WSL2.
+
+**Live-mic perf ceiling — tiny.en + CPU is decode-bound, not encoder-bound.** The growing-buffer architecture re-decodes the entire utterance every stride, and autoregressive decode is O(tokens × ~100 ms) on Burn's CPU backend. A 10 s utterance = ~100 tokens ≈ 10 s wall-clock decode — already > any sane stride. WGPU is **worse** for this workload, not better: the encoder is comparable to CPU but the per-token dispatch tax pushes the autoregressive loop to ~3.5 s per window. **Defaults are tuned for CPU**: `--device cpu`, `stride_secs=2.0`, `max_window_secs=10`, hardcoded `max_new_tokens=48`. These bound worst-case per-window decode at ~5 s, which still drops audio on the unluckiest windows but recovers in 2–3 strides. Drops are surfaced on stderr (`[audio] dropped … samples last second …`) so silent loss is impossible; per-window mel/enc/dec latency is at `tracing::debug` (enable with `RUST_LOG=whisperforge=debug`). Faster hardware or B9 architectural work (encoder caching, fixed-size sliding window, repetition-aware early exit) would lift this ceiling.
 
 ## Code conventions
 
@@ -179,6 +198,7 @@ Token-level output, mic input via `cpal`, ring-buffer chunking, KV-cache across 
 | `/check` | Full quality gate: fmt check → clippy → compile |
 | `/phase` | Current phase status and next commits |
 | `/release` | Pre-release gate + guided `cargo release` (dry-run → confirm → tag/push) |
+| `/stream-test` | Run stream from test WAV in offline JSON mode |
 
 ### Hooks (auto-configured in `.claude/settings.json`)
 
