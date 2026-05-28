@@ -43,20 +43,21 @@ pub struct StreamArgs {
     #[arg(long)]
     pub list_input_devices: bool,
 
-    /// Hard cap on the growing decode buffer in seconds; forces an EOU at the cap to keep
-    /// Whisper's 30 s decoder context safe (default 10.0). Caps at 10 s by default because
-    /// tiny.en's autoregressive decoder generates ~10 tokens/s of speech at ~100 ms/token on
-    /// CPU — a 10 s utterance decodes in ~10 s wall-clock, already > any reasonable stride.
-    /// Longer utterances cause unrecoverable consumer-side audio drops. Raise this only if
-    /// you have hardware fast enough that per-window decode stays under `--stride-secs`.
-    #[arg(long, default_value = "10.0")]
+    /// Hard cap on the growing decode buffer in seconds (default 5.0). When the buffer
+    /// hits this cap the chunker forces an EOU and the utterance splits into a new
+    /// endpoint event; long utterances therefore transcribe as multiple consecutive
+    /// endpoints rather than one continuous committed line. 5.0 s bounds per-window
+    /// decode at ~25 tokens × ~100 ms/token ≈ 2.5 s on tiny.en CPU, comfortably under
+    /// `--stride-secs`. Raise this only if your hardware sustains shorter per-window
+    /// decode at larger windows (otherwise the cpal ring drops samples, logged to stderr).
+    #[arg(long, default_value = "5.0")]
     pub max_window_secs: f32,
 
-    /// Stride (hop) size in seconds between windows (default 2.0). Each stride triggers a
-    /// full re-encode + re-decode of the growing buffer; on tiny.en + CPU that costs ~1.7 s
-    /// per window, so 2.0 keeps the consumer ahead of real-time. Lower this only if your
-    /// hardware can sustain it (otherwise the cpal ring drops samples, logged to stderr).
-    #[arg(long, default_value = "2.0")]
+    /// Stride (hop) size in seconds between windows (default 1.0). Each stride triggers a
+    /// full re-encode + re-decode of the growing buffer; with the 5 s default cap this
+    /// costs ~2.5 s worst-case on tiny.en + CPU, so 1.0 keeps committed-text latency low
+    /// while staying ahead of real-time. Raise to 2.0 if your hardware can't keep up.
+    #[arg(long, default_value = "1.0")]
     pub stride_secs: f32,
 
     /// VAD detection threshold (0.0–1.0, default 0.5)
@@ -361,11 +362,10 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
                 notimestamps_token,
                 timestamp_begin_token,
                 // Cap autoregressive decode work per window. At ~100 ms/token on tiny.en CPU,
-                // this bounds worst-case window cost at ~5 s. Whisper loop-failure modes
-                // (which previously ran out to 128 tokens and blocked the consumer for 10+ s)
-                // now self-terminate in ~5 s. Real speech rarely emits more than ~10 tokens
-                // per second so for `max_window_secs=10` this covers normal utterances.
-                max_new_tokens: 48,
+                // 32 bounds worst-case window cost at ~3.2 s — comfortable headroom over
+                // the 5 s growing buffer's natural ~25-token ceiling (real speech rarely
+                // exceeds ~10 tokens/s). Whisper loop-failure modes self-terminate in ~3 s.
+                max_new_tokens: 32,
                 no_speech_threshold: 0.6,
             };
 

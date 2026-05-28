@@ -7,9 +7,12 @@ const SAMPLE_RATE: u32 = 16_000;
 const VAD_FRAME_SIZE: usize = 512;
 
 pub struct WindowConfig {
-    /// Hard cap on the audio buffer; once reached, the chunker forces an EOU and the
-    /// consumer should call [`Chunker::reset_utterance`]. Default 28.0 s (leaves headroom
-    /// under Whisper's 30 s decoder context window).
+    /// Hard cap on the growing decode buffer; once reached, the chunker forces an EOU and
+    /// the consumer must call [`Chunker::reset_utterance`]. Default 5.0 s — chosen so that
+    /// the autoregressive decoder on tiny.en CPU stays under `stride_secs` per window.
+    /// Long utterances that exceed this cap are transcribed as multiple consecutive
+    /// endpoint events rather than one continuous line; this is a deliberate trade for
+    /// drop-free, duplication-free output (see CLAUDE.md § Live-mic perf ceiling).
     pub max_window_secs: f32,
     /// How often to re-decode the growing buffer (default 1.0 s).
     pub stride_secs: f32,
@@ -22,7 +25,7 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            max_window_secs: 28.0,
+            max_window_secs: 5.0,
             stride_secs: 1.0,
             vad_threshold: 0.5,
             min_speech_secs: 0.25,
@@ -43,7 +46,7 @@ pub struct StreamWindow {
     /// Seconds since the last VAD-positive frame; for use by the endpointer.
     pub trailing_silence_secs: f32,
     /// True when the buffer hit the `max_window_secs` cap; the consumer should treat this
-    /// as a forced EOU (finalize + `reset_utterance`) to avoid blowing the decoder context.
+    /// as a forced EOU (finalize + `reset_utterance`) to keep per-window decode bounded.
     pub forced_eou: bool,
 }
 

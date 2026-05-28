@@ -47,8 +47,11 @@ pub struct DecodeContext<'a> {
 ///
 /// `encoder_out` is consumed by `KvCache::new`; clone before calling if you need it again.
 ///
-/// Timestamps are **enabled** (no `<|notimestamps|>` in the initial context) so that
-/// chunk-relative alignment tokens are available to the committer and endpointer.
+/// `<|notimestamps|>` is pushed as the fourth init token so the decoder emits plain text
+/// (no per-token timestamp tokens between words). This matches the one-shot transcribe
+/// path and gives reliable greedy output on the short windows used by streaming; with
+/// timestamps enabled the model frequently emits a lone `<|0.00|>` then EOT on short or
+/// uncertain windows.
 pub fn decode_window<B: Backend>(
     model: &Whisper<B>,
     encoder_out: Tensor<B, 3>,
