@@ -26,7 +26,7 @@ A high-performance Rust implementation of OpenAI's Whisper speech-to-text model 
 
 ## Project Status
 
-✅ **Production Ready** — Core features complete (Phases A–C + E). Realtime streaming (Phase F) next.
+✅ **Production Ready** — Core features complete (Phases A–C + E + F). Realtime streaming shipped.
 
 | Component | Status |
 |---|---|
@@ -41,7 +41,7 @@ A high-performance Rust implementation of OpenAI's Whisper speech-to-text model 
 | Single `wforge` CLI: `transcribe` / `convert` / `list-models` | ✅ Complete |
 | Speaker diarization (encoder embeddings) | ✅ Complete |
 | INT8 quantization (~4× compression) | ✅ Complete |
-| Realtime streaming (mic input, token-level output) | ⬜ Next (Phase F) |
+| Realtime streaming (mic input, token-level output) | ✅ Complete (Phase F) |
 | WASM target (browser support) | ⏸ Deferred (Phase D blocker) |
 
 ## Installation
@@ -68,23 +68,33 @@ For Rust projects, add WhisperForge crates to `Cargo.toml`:
 
 ```toml
 [dependencies]
-whisperforge-core = "0.3.1"        # Core: Whisper model & audio pipeline
-whisperforge-align = "0.3.1"       # Optional: VAD, batched transcription, SRT
-whisperforge-diarize = "0.3.1"     # Optional: Speaker diarization
+whisperforge-core = "0.4"          # Core: Whisper model & audio pipeline
+whisperforge-align = "0.4"         # Optional: VAD, batched transcription, SRT
+whisperforge-diarize = "0.4"       # Optional: Speaker diarization
+burn-flex = "0.21"                 # Required: CPU backend (or use burn-wgpu for GPU)
+tokenizers = "0.22"                # Required: BPE tokenizer
 
 [features]
 gpu = ["whisperforge-core/cubecl-stft"]  # Optional: GPU via WGPU
 ```
 
-Basic example:
+Basic example (CPU backend):
 ```rust
-use whisperforge_core::{Model, WhisperConfig};
-use std::path::Path;
+use whisperforge_core::{
+    DecodingConfig, WhisperTranscriber, audio::load_audio_file,
+    load::load_whisper, transcribe::transcribe_audio,
+};
+use burn_flex::{Flex, FlexDevice};
+use tokenizers::Tokenizer;
 
-let config = WhisperConfig::new("tiny.en");
-let model = Model::load(Path::new("models/tiny_en_converted"))?;
-let transcript = model.transcribe(audio_samples, sample_rate)?;
-println!("{}", transcript);
+let device = FlexDevice;
+let model = load_whisper::<Flex<f32>>("models/tiny_en_converted", &device)?;
+let tokenizer = Tokenizer::from_file("models/tokenizer.json")?;
+let transcriber = WhisperTranscriber::new(model, tokenizer, DecodingConfig::default());
+
+let audio = load_audio_file("speech.wav")?;
+let result = transcribe_audio(&transcriber, &audio, &device)?;
+println!("{}", result.text);
 ```
 
 ## Quick Start
@@ -126,6 +136,53 @@ cargo test --release -p whisperforge-core -p whisperforge
 # Format + lint
 cargo fmt --all && cargo clippy --all-targets --all-features
 ```
+
+## Streaming (Phase F)
+
+`wforge stream` delivers always-on local transcription that emits partial results as you speak. The pipeline is: microphone → Silero VAD (32 ms frames) → growing-buffer chunker (5 s cap / 1 s stride) → per-window Whisper encode + greedy decode → LocalAgreement-2 committer (tokens stable across two consecutive decodes are permanently emitted) → silence + punctuation endpointer → output sinks.
+
+Long utterances stay on one continuous commit stream via **stride-based buffer trimming on cap-hit**: when the buffer reaches `--max-window-secs`, the chunker drops the oldest 1.5 s, the committer force-commits its tentative tail, and the next stride establishes a fresh LCP baseline. ~30% of mid-utterance content can be dropped at trim seams as a known trade-off (Whisper's non-causal encoder produces different tokens for the same audio across different buffer sizes); raising `--max-window-secs` for shorter utterances avoids any trims. See CLAUDE.md § "Live-mic perf ceiling" for the full breakdown.
+
+```bash
+# Transcribe from the default microphone (committed text appears in real time)
+wforge stream --model tiny_en_converted
+
+# From file — no microphone needed, runs faster than real time
+wforge stream --model tiny_en_converted \
+  --from-file audio.wav --no-realtime --json
+
+# Record the captured audio while streaming
+wforge stream --model tiny_en_converted --record-to /tmp/session.wav
+
+# Append each committed sentence to a transcript file
+wforge stream --model tiny_en_converted --transcript-to /tmp/transcript.txt
+
+# List available input devices
+wforge stream --list-input-devices
+```
+
+**Key flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model <name>` | required | Converted model name under `models/` |
+| `--device <auto\|cpu\|wgpu\|cuda>` | `auto` | Backend selection |
+| `--input-device <name>` | system default | Named cpal input device |
+| `--list-input-devices` | — | Print host/device list and exit |
+| `--max-window-secs <f32>` | `5.0` | Hard cap on the growing decode buffer; cap-hit triggers a stride-based trim |
+| `--stride-secs <f32>` | `1.0` | Stride between successive windows |
+| `--vad-threshold <f32>` | `0.5` | Silero VAD speech probability threshold |
+| `--silence-secs <f32>` | `2.0` | Hard end-of-utterance silence |
+| `--punct-silence-secs <f32>` | `0.8` | Soft EOU after terminal punctuation |
+| `--prompt-tokens <usize>` | `0` | `<\|prevtext\|>` carry-over tokens (off by default — non-zero can lock the decoder into hallucination loops on quiet audio) |
+| `--json` | off | NDJSON output to stdout |
+| `--record-to <path>` | — | Tee 16 kHz mono WAV |
+| `--transcript-to <path>` | — | Append `[mm:ss–mm:ss] text` lines |
+| `--from-file <path>` | — | Feed a WAV instead of microphone |
+| `--no-realtime` | off | Feed file at max speed (offline mode) |
+| `--no-color` | off | Disable ANSI styling |
+
+> **WSL2:** `cpal` requires a PulseAudio bridge on WSL2. Use `--from-file` for all testing on WSL2 until the bridge is set up.
 
 ## Model Files
 
@@ -171,6 +228,7 @@ wforge <COMMAND>
 Commands:
   transcribe   Transcribe an audio file to text, SRT, or JSON
   convert      Convert a HuggingFace Whisper safetensors model to Burn `.mpk` format
+  stream       Realtime streaming transcription from microphone or file
 
 wforge transcribe [OPTIONS]
   -a, --audio-file <FILE>          Input audio file (WAV, MP3, FLAC, OGG, M4A)
@@ -199,6 +257,25 @@ wforge convert [OPTIONS]
       --output <PATH>              Output path without extension (required)
       --local-safetensors <PATH>   Load from local safetensors file instead of downloading
       --quantize <MODE>            none | int8 [default: none]
+
+wforge stream [OPTIONS]
+  -m, --model <MODEL>              Model name under models/ (required)
+      --models-dir <PATH>          Directory holding `.mpk`/`.cfg` models (or set WF_MODELS_DIR)
+      --device <DEVICE>            auto | cpu | wgpu | cuda [default: auto]
+      --input-device <NAME>        Named cpal input device (default: system default)
+      --list-input-devices         Print available input devices and exit
+      --max-window-secs <F>        Hard cap on growing decode buffer in seconds [default: 5.0]
+      --stride-secs <F>            Stride between windows in seconds [default: 1.0]
+      --vad-threshold <F>          Silero VAD threshold [default: 0.5]
+      --silence-secs <F>           Hard end-of-utterance silence [default: 2.0]
+      --punct-silence-secs <F>     Soft EOU after terminal punctuation [default: 0.8]
+      --prompt-tokens <N>          <|prevtext|> carry-over tokens, 0 = disabled [default: 0]
+      --json                       NDJSON output to stdout
+      --record-to <PATH>           Tee 16 kHz mono WAV to file
+      --transcript-to <PATH>       Append committed lines to text file
+      --no-color                   Disable ANSI styling
+      --from-file <PATH>           Feed a WAV file instead of microphone
+      --no-realtime                Feed file at max speed (offline mode)
 ```
 
 **Available models:**
