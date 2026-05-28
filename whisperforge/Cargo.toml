@@ -13,6 +13,7 @@ categories = ["command-line-utilities", "multimedia::audio"]
 readme = "README.md"
 autobins = false
 autobenches = false
+default-run = "wforge"
 
 [[bin]]
 name = "wforge"

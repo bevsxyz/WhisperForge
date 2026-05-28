@@ -70,6 +70,7 @@ fn run_bench<B: Backend>(audio: &Path, models_dir: &Path, device: B::Device) -> 
     let transcribe_token = tok("<|transcribe|>", 50359);
     let eot_token = tok("<|endoftext|>", 50257);
     let no_speech_token = tok("<|nospeech|>", 50362);
+    let notimestamps_token = tok("<|notimestamps|>", 50363);
     let timestamp_begin_token = 50364u32;
     let prevtext_token_id = tokenizer.token_to_id("<|prevtext|>");
 
@@ -78,7 +79,7 @@ fn run_bench<B: Backend>(audio: &Path, models_dir: &Path, device: B::Device) -> 
     let vad = SileroVad::open(&vad_path)?;
 
     let window_cfg = WindowConfig {
-        window_secs: 5.0,
+        max_window_secs: 28.0,
         stride_secs: 1.0,
         vad_threshold: 0.5,
         min_speech_secs: 0.25,
@@ -142,6 +143,7 @@ fn run_bench<B: Backend>(audio: &Path, models_dir: &Path, device: B::Device) -> 
             sot_token,
             eot_token,
             no_speech_token,
+            notimestamps_token,
             timestamp_begin_token,
             max_new_tokens: 128,
             no_speech_threshold: 0.6,
@@ -154,12 +156,13 @@ fn run_bench<B: Backend>(audio: &Path, models_dir: &Path, device: B::Device) -> 
 
         let (_commit_delta, _) = committer.ingest(emits);
 
-        if endpointer.step(&window, committer.committed_text()) {
+        if endpointer.step(&window, committer.committed_text()) || window.forced_eou {
             let final_delta = committer.finalize_utterance();
             if let CommitDelta::Committed { .. } = final_delta {
                 prompt_ctx.update_after_eou(committer.committed_tokens(), 128);
             }
             endpointer.reset();
+            chunker.reset_utterance();
         }
 
         total_window_ms.push(window_start.elapsed().as_millis() as u64);

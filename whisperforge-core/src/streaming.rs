@@ -7,17 +7,22 @@ const SAMPLE_RATE: u32 = 16_000;
 const VAD_FRAME_SIZE: usize = 512;
 
 pub struct WindowConfig {
-    pub window_secs: f32,
+    /// Hard cap on the audio buffer; once reached, the chunker forces an EOU and the
+    /// consumer should call [`Chunker::reset_utterance`]. Default 28.0 s (leaves headroom
+    /// under Whisper's 30 s decoder context window).
+    pub max_window_secs: f32,
+    /// How often to re-decode the growing buffer (default 1.0 s).
     pub stride_secs: f32,
     pub vad_threshold: f32,
-    /// Minimum accumulated speech before the first window fires (debounces VAD flicker).
+    /// Minimum accumulated speech before the first window of an utterance fires
+    /// (debounces VAD flicker).
     pub min_speech_secs: f32,
 }
 
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            window_secs: 5.0,
+            max_window_secs: 28.0,
             stride_secs: 1.0,
             vad_threshold: 0.5,
             min_speech_secs: 0.25,
@@ -26,47 +31,54 @@ impl Default for WindowConfig {
 }
 
 pub struct StreamWindow {
-    /// Exactly `window_secs × 16 000` samples; zero-padded at the front when the
-    /// buffer is not yet full, or at the back when draining post-speech.
+    /// Exactly `max_window_secs × 16 000` samples; zero-padded at the BACK when the
+    /// growing buffer hasn't reached `max_window_secs` yet.
     pub samples: Vec<f32>,
     /// Number of real (non-padding) samples in `samples`.
     pub real_samples: usize,
-    /// Wall-clock offset since stream start: `(total_seen − real_samples) / 16000`.
+    /// Wall-clock offset since stream start of the first sample in the current utterance.
     pub window_start_secs: f32,
-    /// True if any VAD-positive frame falls within the current window buffer.
+    /// True if any VAD-positive frame falls within the current utterance buffer.
     pub had_speech: bool,
     /// Seconds since the last VAD-positive frame; for use by the endpointer.
     pub trailing_silence_secs: f32,
+    /// True when the buffer hit the `max_window_secs` cap; the consumer should treat this
+    /// as a forced EOU (finalize + `reset_utterance`) to avoid blowing the decoder context.
+    pub forced_eou: bool,
 }
 
 pub struct Chunker {
     cfg: WindowConfig,
     vad: SileroVad,
-    buf: VecDeque<f32>,
+    /// Growing audio buffer for the current utterance; never exceeds `max_window_secs * 16 kHz`.
+    buf: Vec<f32>,
     pub samples_since_last_stride: usize,
     pub total_samples_seen: u64,
     pub last_speech_at_sample: Option<u64>,
 
     // --- private implementation details ---
 
-    // Total speech samples seen in the session; gates the first window emission.
+    // Speech samples accumulated within the current utterance; gates the first stride.
     speech_samples_accumulated: u64,
     // Partial accumulation buffer for in-progress VAD frames.
     vad_frame_buf: Vec<f32>,
-    // Once we have emitted at least one window, subsequent strides fire even during silence.
+    // Once the first stride of the current utterance has fired, subsequent strides
+    // fire even during silence (so the endpointer can see growing trailing silence).
     window_ever_emitted: bool,
-    // Rolling log of is_speech per completed VAD frame, bounded to cover the window.
+    // VAD decisions for the current utterance's audio buffer.
     vad_decisions: VecDeque<bool>,
+    // Sample index (in stream-relative terms) where the current utterance's audio[0] sits.
+    utterance_start_sample: u64,
 }
 
 impl Chunker {
     pub fn new(cfg: WindowConfig, vad: SileroVad) -> Self {
-        let window_samples = (cfg.window_secs * SAMPLE_RATE as f32) as usize;
-        let max_vad_frames = window_samples.div_ceil(VAD_FRAME_SIZE);
+        let max_samples = (cfg.max_window_secs * SAMPLE_RATE as f32) as usize;
+        let max_vad_frames = max_samples.div_ceil(VAD_FRAME_SIZE);
         Self {
             cfg,
             vad,
-            buf: VecDeque::with_capacity(window_samples),
+            buf: Vec::with_capacity(max_samples),
             samples_since_last_stride: 0,
             total_samples_seen: 0,
             last_speech_at_sample: None,
@@ -74,28 +86,27 @@ impl Chunker {
             vad_frame_buf: Vec::with_capacity(VAD_FRAME_SIZE),
             window_ever_emitted: false,
             vad_decisions: VecDeque::with_capacity(max_vad_frames),
+            utterance_start_sample: 0,
         }
     }
 
-    /// Push new microphone samples; returns `Some(window)` when a stride boundary fires.
+    /// Push new microphone samples; returns `Some(window)` when a stride boundary fires
+    /// or the buffer hits the `max_window_secs` cap (`forced_eou == true` in that case).
     ///
-    /// In the common case (push size ≪ stride interval) at most one window fires per call.
-    /// If multiple stride boundaries happen to fall within one call, only the last one
-    /// is returned; the intermediate window state is still correctly advanced.
+    /// The buffer GROWS — it doesn't slide. Consumers must call [`reset_utterance`] after
+    /// committing/finalising an utterance so the next stride starts a fresh buffer.
     pub fn push(&mut self, samples: &[f32]) -> Option<StreamWindow> {
         let stride_samples = (self.cfg.stride_secs * SAMPLE_RATE as f32) as usize;
-        let window_samples = (self.cfg.window_secs * SAMPLE_RATE as f32) as usize;
+        let max_samples = (self.cfg.max_window_secs * SAMPLE_RATE as f32) as usize;
         let min_speech_samples = (self.cfg.min_speech_secs * SAMPLE_RATE as f32) as u64;
-        let max_vad_frames = window_samples.div_ceil(VAD_FRAME_SIZE);
+        let max_vad_frames = max_samples.div_ceil(VAD_FRAME_SIZE);
 
         let mut result: Option<StreamWindow> = None;
 
         for &s in samples {
-            // Maintain sliding window buffer (bounded to window_secs × 16 kHz samples).
-            if self.buf.len() >= window_samples {
-                self.buf.pop_front();
+            if self.buf.len() < max_samples {
+                self.buf.push(s);
             }
-            self.buf.push_back(s);
             self.total_samples_seen += 1;
             self.samples_since_last_stride += 1;
 
@@ -119,18 +130,26 @@ impl Chunker {
                     self.speech_samples_accumulated += VAD_FRAME_SIZE as u64;
                 }
 
-                // Keep a rolling window of decisions aligned with the audio buffer.
                 if self.vad_decisions.len() >= max_vad_frames {
                     self.vad_decisions.pop_front();
                 }
                 self.vad_decisions.push_back(is_speech);
             }
 
-            // Check for stride tick.
+            // Force-EOU if we've hit the cap; consumer must handle and call reset_utterance.
+            if self.buf.len() >= max_samples {
+                let mut w = self.build_window(max_samples);
+                w.forced_eou = true;
+                result = Some(w);
+                self.samples_since_last_stride = 0;
+                continue;
+            }
+
+            // Regular stride tick.
             if self.samples_since_last_stride >= stride_samples {
                 let enough_speech = self.speech_samples_accumulated >= min_speech_samples;
                 if enough_speech || self.window_ever_emitted {
-                    result = Some(self.build_window(window_samples));
+                    result = Some(self.build_window(max_samples));
                     self.window_ever_emitted = true;
                 }
                 self.samples_since_last_stride = 0;
@@ -140,28 +159,22 @@ impl Chunker {
         result
     }
 
-    fn build_window(&self, window_samples: usize) -> StreamWindow {
+    fn build_window(&self, max_samples: usize) -> StreamWindow {
         let real_samples = self.buf.len();
-        let buf_slice: Vec<f32> = self.buf.iter().copied().collect();
-
-        // Zero-pad the front when the buffer isn't full yet.
-        let samples = if buf_slice.len() < window_samples {
-            let pad_len = window_samples - buf_slice.len();
-            let mut v = vec![0.0f32; pad_len];
-            v.extend_from_slice(&buf_slice);
-            v
-        } else {
-            buf_slice
-        };
+        let mut samples = Vec::with_capacity(max_samples);
+        samples.extend_from_slice(&self.buf);
+        samples.resize(max_samples, 0.0);
 
         let trailing_silence_secs = match self.last_speech_at_sample {
             Some(last) => self.total_samples_seen.saturating_sub(last) as f32 / SAMPLE_RATE as f32,
-            None => self.total_samples_seen as f32 / SAMPLE_RATE as f32,
+            None => {
+                self.total_samples_seen
+                    .saturating_sub(self.utterance_start_sample) as f32
+                    / SAMPLE_RATE as f32
+            }
         };
 
-        let window_start_secs =
-            self.total_samples_seen.saturating_sub(real_samples as u64) as f32 / SAMPLE_RATE as f32;
-
+        let window_start_secs = self.utterance_start_sample as f32 / SAMPLE_RATE as f32;
         let had_speech = self.vad_decisions.iter().any(|&b| b);
 
         StreamWindow {
@@ -170,7 +183,21 @@ impl Chunker {
             window_start_secs,
             had_speech,
             trailing_silence_secs,
+            forced_eou: false,
         }
+    }
+
+    /// Drop the current utterance buffer so the next stride starts fresh. Call after
+    /// `committer.finalize_utterance()` (either natural EOU or `forced_eou`). Wall-clock
+    /// counters and the last-speech timestamp persist so trailing-silence math stays valid
+    /// across utterance boundaries.
+    pub fn reset_utterance(&mut self) {
+        self.buf.clear();
+        self.samples_since_last_stride = 0;
+        self.vad_decisions.clear();
+        self.speech_samples_accumulated = 0;
+        self.window_ever_emitted = false;
+        self.utterance_start_sample = self.total_samples_seen;
     }
 }
 
@@ -196,6 +223,11 @@ pub struct Committer {
     last_candidate: Vec<TokenEmit>,
     committed: Vec<TokenEmit>,
     committed_text: String,
+    /// Set by `finalize_utterance`; the next `ingest` auto-resets the committer's per-
+    /// utterance state. This lets the caller read `committed_tokens` / `committed_text`
+    /// between finalize and the next ingest (e.g. for the `<|prevtext|>` prompt prefix)
+    /// without smearing the previous utterance into the next one.
+    awaiting_reset: bool,
 }
 
 impl Committer {
@@ -204,6 +236,7 @@ impl Committer {
             last_candidate: Vec::new(),
             committed: Vec::new(),
             committed_text: String::new(),
+            awaiting_reset: false,
         }
     }
 
@@ -211,19 +244,28 @@ impl Committer {
     ///
     /// Returns `(committed_delta, tentative_delta)`.
     pub fn ingest(&mut self, candidate: Vec<TokenEmit>) -> (CommitDelta, CommitDelta) {
-        let lcp = lcp_len(&self.last_candidate, &candidate);
-        let new_start = self.committed.len();
-        let new_end = lcp.max(new_start);
-
-        // Extend the committed buffer with any newly stable tokens.
-        for t in candidate[new_start..new_end].iter() {
-            self.committed.push(t.clone());
+        if self.awaiting_reset {
+            self.last_candidate.clear();
+            self.committed.clear();
+            self.committed_text.clear();
+            self.awaiting_reset = false;
         }
-        let new_text = build_text(&self.committed[new_start..]);
+        let lcp = lcp_len(&self.last_candidate, &candidate);
+        let prev_committed_len = self.committed.len();
+
+        // Commit candidate[prev_committed_len..lcp] when lcp has advanced past what we've
+        // already committed. If lcp < prev_committed_len the new decode regressed on
+        // committed tokens — committed tokens are final, so we simply don't extend.
+        if lcp > prev_committed_len {
+            for t in candidate[prev_committed_len..lcp].iter() {
+                self.committed.push(t.clone());
+            }
+        }
+
+        let new_text = build_text(&self.committed[prev_committed_len..]);
         self.committed_text.push_str(&new_text);
 
-        // Collect the return slice before moving candidate.
-        let new_tokens: Vec<TokenEmit> = self.committed[new_start..].to_vec();
+        let new_tokens: Vec<TokenEmit> = self.committed[prev_committed_len..].to_vec();
         let tentative_tokens: Vec<TokenEmit> = candidate[lcp..].to_vec();
         let tentative_text = build_text(&tentative_tokens);
 
@@ -243,14 +285,22 @@ impl Committer {
 
     /// Force-commit everything tentative. Called by the endpointer on EOU.
     ///
-    /// Clears `last_candidate` so the next utterance starts with a clean slate.
+    /// After this call, `committed_tokens` / `committed_text` still reflect the just-
+    /// finalised utterance (so the caller can build a `<|prevtext|>` prompt from it).
+    /// The next `ingest` will auto-reset the committer for the new utterance. Repeated
+    /// `finalize_utterance` calls without an intervening `ingest` are a no-op.
     pub fn finalize_utterance(&mut self) -> CommitDelta {
         let start = self.committed.len();
-        let new_tokens: Vec<TokenEmit> = self.last_candidate[start..].to_vec();
+        let new_tokens: Vec<TokenEmit> = if start < self.last_candidate.len() {
+            self.last_candidate[start..].to_vec()
+        } else {
+            Vec::new()
+        };
         let new_text = build_text(&new_tokens);
         self.committed_text.push_str(&new_text);
         self.committed.extend(new_tokens.iter().cloned());
         self.last_candidate.clear();
+        self.awaiting_reset = true;
         CommitDelta::Committed {
             new_tokens,
             new_text,
@@ -554,7 +604,7 @@ mod tests {
     fn test_chunker_speech_windows_cluster() -> Result<()> {
         let vad = open_vad()?;
         let cfg = WindowConfig {
-            window_secs: 5.0,
+            max_window_secs: 28.0,
             stride_secs: 1.0,
             vad_threshold: 0.5,
             min_speech_secs: 0.25,
@@ -596,30 +646,21 @@ mod tests {
             }
         }
 
-        // At least one window with speech should have fired.
+        // At least one window with speech should have fired (the growing buffer keeps the
+        // speech samples from the middle 2 s of audio for all subsequent windows).
         assert!(!windows.is_empty(), "no windows emitted");
         let speech_windows: Vec<&StreamWindow> = windows.iter().filter(|w| w.had_speech).collect();
         assert!(!speech_windows.is_empty(), "no speech windows detected");
 
-        // Speech windows should start in the 3–7 s range (generous margin for VAD latency).
+        // window_start_secs anchors to where the *current utterance buffer* started — which
+        // here is 0 (we never reset). Just sanity-check it's a reasonable wall-clock value.
         for w in &speech_windows {
             assert!(
-                w.window_start_secs >= 2.0 && w.window_start_secs <= 8.0,
-                "speech window start {:.2} s outside expected 2–8 s band",
+                w.window_start_secs >= 0.0 && w.window_start_secs <= 11.0,
+                "speech window start {:.2} s outside expected 0–11 s range",
                 w.window_start_secs
             );
         }
-
-        // Windows entirely within the first 3 s should be silence-only.
-        let early_speech: Vec<&StreamWindow> = windows
-            .iter()
-            .filter(|w| w.window_start_secs < 3.0 && w.had_speech)
-            .collect();
-        assert!(
-            early_speech.is_empty(),
-            "{} speech window(s) detected before 3 s",
-            early_speech.len()
-        );
 
         Ok(())
     }
@@ -722,7 +763,25 @@ mod tests {
                 .iter()
                 .map(|t| t.id)
                 .collect::<Vec<_>>(),
-            vec![1, 2, 4, 6]
+            vec![1, 2, 4, 6],
+            "committed_tokens must remain readable after finalize for PromptContext"
+        );
+
+        // Repeated finalize without an intervening ingest must not panic and must yield empty.
+        let noop = c.finalize_utterance();
+        assert!(
+            committed_ids(&noop).is_empty(),
+            "second finalize must be a no-op"
+        );
+
+        // Next ingest auto-resets the committer; the new utterance must start fresh and
+        // commit normally rather than refusing because cumulative `committed.len()` is high.
+        c.ingest(vec![make_token(10), make_token(20), make_token(30)]);
+        let (comm, _) = c.ingest(vec![make_token(10), make_token(20), make_token(40)]);
+        assert_eq!(
+            committed_ids(&comm),
+            vec![10, 20],
+            "new utterance must commit [tok10, tok20] after auto-reset"
         );
 
         Ok(())
@@ -762,6 +821,7 @@ mod tests {
             window_start_secs,
             had_speech: trailing_silence_secs < 5.0,
             trailing_silence_secs,
+            forced_eou: false,
         }
     }
 
@@ -933,7 +993,7 @@ mod tests {
         // window must fire after exactly stride_secs regardless of VAD output.
         let vad = open_vad()?;
         let cfg = WindowConfig {
-            window_secs: 3.0,
+            max_window_secs: 3.0,
             stride_secs: 1.0,
             vad_threshold: 0.5,
             min_speech_secs: 0.0,
@@ -954,11 +1014,53 @@ mod tests {
         assert_eq!(
             w.samples.len(),
             3 * SAMPLE_RATE as usize,
-            "samples vec must be window_secs × 16000 long"
+            "samples vec must be max_window_secs × 16000 long"
         );
         assert!(
             (w.window_start_secs - 0.0).abs() < 1e-4,
             "window_start_secs should be 0.0"
+        );
+        assert!(!w.forced_eou, "first 1-s window should not be a forced EOU");
+
+        Ok(())
+    }
+
+    /// Growing-buffer EOU: pushing > max_window_secs of audio must produce a forced_eou window.
+    #[test]
+    #[ignore = "requires silero_vad.onnx in ./models"]
+    fn test_chunker_forced_eou_at_cap() -> Result<()> {
+        let vad = open_vad()?;
+        let cfg = WindowConfig {
+            max_window_secs: 2.0,
+            stride_secs: 1.0,
+            vad_threshold: 0.5,
+            min_speech_secs: 0.0,
+        };
+        let mut chunker = Chunker::new(cfg, vad);
+
+        // Push 3 s of silence in one call; the chunker should cap the buffer at 2 s of
+        // real audio and emit a forced_eou window. (The last window returned wins per
+        // Chunker::push semantics.)
+        let three_seconds = vec![0.0f32; 3 * SAMPLE_RATE as usize];
+        let window = chunker
+            .push(&three_seconds)
+            .expect("at least one window should have fired");
+        assert!(window.forced_eou, "forced_eou must be set at the cap");
+        assert_eq!(window.real_samples, 2 * SAMPLE_RATE as usize);
+
+        // After reset_utterance, the buffer drops to 0 and the next stride starts fresh.
+        chunker.reset_utterance();
+        let one_second = vec![0.0f32; SAMPLE_RATE as usize];
+        let w2 = chunker
+            .push(&one_second)
+            .expect("first stride of new utterance should fire");
+        assert!(!w2.forced_eou);
+        assert_eq!(w2.real_samples, SAMPLE_RATE as usize);
+        // window_start_secs anchors to the new utterance's audio[0] = 3 s of wall-clock.
+        assert!(
+            (w2.window_start_secs - 3.0).abs() < 1e-3,
+            "new utterance start should be ~3 s, got {}",
+            w2.window_start_secs
         );
 
         Ok(())

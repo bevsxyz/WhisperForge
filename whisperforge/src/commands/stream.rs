@@ -43,9 +43,10 @@ pub struct StreamArgs {
     #[arg(long)]
     pub list_input_devices: bool,
 
-    /// Window size in seconds for processing (default 5.0)
-    #[arg(long, default_value = "5.0")]
-    pub window_secs: f32,
+    /// Hard cap on the growing decode buffer in seconds; forces an EOU at the cap to keep
+    /// Whisper's 30 s decoder context safe (default 28.0).
+    #[arg(long, default_value = "28.0")]
+    pub max_window_secs: f32,
 
     /// Stride (hop) size in seconds between windows (default 1.0)
     #[arg(long, default_value = "1.0")]
@@ -167,6 +168,7 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
     let transcribe_token = tok("<|transcribe|>", 50359);
     let eot_token = tok("<|endoftext|>", 50257);
     let no_speech_token = tok("<|nospeech|>", 50362);
+    let notimestamps_token = tok("<|notimestamps|>", 50363);
     let timestamp_begin_token = 50364u32;
     let prevtext_token_id = tokenizer.token_to_id("<|prevtext|>");
 
@@ -175,7 +177,7 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
     let vad = SileroVad::open(&vad_path)?;
 
     let window_cfg = WindowConfig {
-        window_secs: args.window_secs,
+        max_window_secs: args.max_window_secs,
         stride_secs: args.stride_secs,
         vad_threshold: args.vad_threshold,
         min_speech_secs: 0.25,
@@ -252,32 +254,56 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
         .context("open WAV writer for --record-to")?;
 
     const WINDOW_SAMPLES: usize = 480_000; // 30 s at 16 kHz — Whisper's expected input length
+    const SILENCE_FRAME: [f32; 512] = [0.0f32; 512]; // 32 ms of silence at 16 kHz
 
     let mut drain_buf = vec![0.0f32; 4096];
     let mut utterance_committed = String::new();
     let mut utterance_start_secs = 0.0f32;
     let mut utterance_started = false;
+    // Wall-clock seconds of synthesised silence since the last real audio sample. Reset on
+    // any non-empty pop_samples. Used to (a) keep the chunker striding so the endpointer can
+    // fire naturally after speech stops, and (b) cleanly shut down file-fed runs.
+    let mut silence_pushed_secs = 0.0f32;
 
     while !shutdown.load(Ordering::SeqCst) {
         let n = source.pop_samples(&mut drain_buf);
-        if n == 0 {
-            if source.is_file_done() {
+
+        let window = if n > 0 {
+            silence_pushed_secs = 0.0;
+
+            if let Some(writer) = wav_writer.as_mut() {
+                for &sample in &drain_buf[..n] {
+                    writer.write_sample(sample).context("write WAV sample")?;
+                }
+            }
+
+            match chunker.push(&drain_buf[..n]) {
+                Some(w) => w,
+                None => continue,
+            }
+        } else {
+            // No new audio: synthesise a 32 ms silence frame so the chunker keeps striding
+            // and `trailing_silence_secs` grows. The endpointer can then fire naturally
+            // after `args.silence_secs` of post-speech silence, even when a file source
+            // has reached EOF.
+            //
+            // Shutdown gate: when the source is finished AND nothing is pending in the
+            // current utterance buffer AND we've already drained ~silence_secs of trailing
+            // silence past the last EOU, stop the loop.
+            if source.is_file_done()
+                && utterance_committed.is_empty()
+                && !utterance_started
+                && silence_pushed_secs > args.silence_secs + 0.5
+            {
                 shutdown.store(true, Ordering::SeqCst);
-            } else {
-                thread::sleep(Duration::from_millis(5));
+                continue;
             }
-            continue;
-        }
-
-        if let Some(writer) = wav_writer.as_mut() {
-            for &sample in &drain_buf[..n] {
-                writer.write_sample(sample).context("write WAV sample")?;
+            silence_pushed_secs += SILENCE_FRAME.len() as f32 / 16_000.0;
+            thread::sleep(Duration::from_millis(32));
+            match chunker.push(&SILENCE_FRAME) {
+                Some(w) => w,
+                None => continue,
             }
-        }
-
-        let window = match chunker.push(&drain_buf[..n]) {
-            Some(w) => w,
-            None => continue,
         };
 
         let emits = if window.had_speech {
@@ -295,6 +321,7 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
                 sot_token,
                 eot_token,
                 no_speech_token,
+                notimestamps_token,
                 timestamp_begin_token,
                 max_new_tokens: 128,
                 no_speech_threshold: 0.6,
@@ -326,7 +353,8 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
 
         sink.on_partial(&utterance_committed, &tentative_text)?;
 
-        if endpointer.step(&window, committer.committed_text()) {
+        let endpoint_fires = endpointer.step(&window, committer.committed_text());
+        if endpoint_fires || window.forced_eou {
             let final_delta = committer.finalize_utterance();
             if let CommitDelta::Committed { ref new_text, .. } = final_delta {
                 if !new_text.is_empty() {
@@ -341,6 +369,7 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
 
             prompt_ctx.update_after_eou(committer.committed_tokens(), 128);
             endpointer.reset();
+            chunker.reset_utterance();
             utterance_committed.clear();
             utterance_started = false;
         }

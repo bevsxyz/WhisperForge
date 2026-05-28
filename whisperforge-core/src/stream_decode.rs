@@ -11,7 +11,9 @@ use crate::model::Whisper;
 #[derive(Clone)]
 pub struct TokenEmit {
     pub id: u32,
-    /// Raw BPE piece from the tokenizer vocabulary; empty string for special and timestamp tokens.
+    /// Detokenised surface text for this single token (via `tokenizer.decode(&[id], false)`),
+    /// so concatenating regular-token `text` fields yields a properly-spaced transcript.
+    /// Empty string for special and timestamp tokens.
     pub text: String,
     pub logprob: f32,
     /// Seconds within the 30-s window for timestamp tokens; `None` for regular tokens.
@@ -31,6 +33,10 @@ pub struct DecodeContext<'a> {
     pub no_speech_token: u32,
     /// First timestamp token ID (50364 for all current Whisper models).
     pub timestamp_begin_token: u32,
+    /// `<|notimestamps|>` token ID. When pushed as the 4th init token the decoder produces
+    /// plain text (no timestamp tokens between words), matching the one-shot transcribe
+    /// path and producing far more reliable greedy output on short windows.
+    pub notimestamps_token: u32,
     /// Hard cap on new tokens generated (not counting prompt or init tokens).
     pub max_new_tokens: usize,
     /// Return empty `Vec` when P(no_speech) exceeds this at step 0 (default 0.6).
@@ -68,8 +74,15 @@ pub fn decode_window<B: Backend>(
             .with_context(|| format!("feeding prompt token {tok}"))?;
     }
 
-    // Feed the three mandatory init tokens; capture logits only after the last one.
-    let init = [ctx.sot_token, ctx.language_token, ctx.transcribe_token];
+    // Feed the four init tokens. `<|notimestamps|>` is included so the greedy decoder
+    // produces plain text (matching the one-shot transcribe path). Without it, the model
+    // emits a single `<|0.00|>` timestamp then EOT for short windows.
+    let init = [
+        ctx.sot_token,
+        ctx.language_token,
+        ctx.transcribe_token,
+        ctx.notimestamps_token,
+    ];
     let mut logits: Vec<f32> = Vec::new();
     for (i, &tok) in init.iter().enumerate() {
         logits = forward_decoder_cached(model, tok, &mut cache, device)
@@ -111,7 +124,7 @@ pub fn decode_window<B: Backend>(
         let text = if is_special {
             String::new()
         } else {
-            tokenizer.id_to_token(token_id).unwrap_or_default()
+            tokenizer.decode(&[token_id], false).unwrap_or_default()
         };
 
         emits.push(TokenEmit {
@@ -131,6 +144,31 @@ pub fn decode_window<B: Backend>(
         decode_ms = t0.elapsed().as_millis(),
         n_tokens = emits.len()
     );
+
+    // Punctuation-only decodes are a Whisper failure mode on short/uncertain windows: the
+    // model emits a lone `.` or `,` then EOT. Treat as no-speech so the streaming committer
+    // doesn't pick up the noise as a stable prefix. Only fires when there *is* regular text
+    // — an emits list containing only specials/timestamps still passes through (the
+    // committer ignores them) so we don't accidentally drop legitimate timestamp-only
+    // windows.
+    let regular_text: String = emits
+        .iter()
+        .filter(|t| !t.is_special)
+        .map(|t| t.text.as_str())
+        .collect();
+    let trimmed = regular_text.trim();
+    if !trimmed.is_empty()
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_punctuation() || c.is_whitespace())
+    {
+        event!(
+            Level::DEBUG,
+            dropped_punctuation_only = true,
+            text = %trimmed
+        );
+        return Ok(Vec::new());
+    }
 
     Ok(emits)
 }
@@ -193,6 +231,7 @@ mod tests {
             sot_token: 50258,
             eot_token: 50257,
             no_speech_token: 50362,
+            notimestamps_token: 50363,
             timestamp_begin_token: 50364,
             max_new_tokens: 8,
             // Set very high so the no-speech gate never fires with random weights.
@@ -236,7 +275,7 @@ mod tests {
     /// Real-model test: decode_window on tiny_en produces non-empty output for a speech clip
     /// and the text (after filtering specials) is close to the one-shot transcribe path.
     #[test]
-    #[ignore = "requires tiny_en_converted in ./models/ AND whisperforge-core/tests/data/ljspeech_sample.wav"]
+    #[ignore = "requires tiny_en_converted in ./models/ AND test_data/LJ001-0001_16k.wav at repo root"]
     fn test_decode_window_matches_transcribe_path() -> Result<()> {
         use crate::{
             WhisperInference, WhisperTranscriber, audio::compute_mel_from_samples,
@@ -268,9 +307,10 @@ mod tests {
 
         // Load the first 480_000 samples (30 s at 16 kHz) from the test WAV.
         let wav_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("data")
-            .join("ljspeech_sample.wav");
+            .parent()
+            .expect("workspace root")
+            .join("test_data")
+            .join("LJ001-0001_16k.wav");
         let raw =
             std::fs::read(&wav_path).with_context(|| format!("read {}", wav_path.display()))?;
         // Minimal WAV reader: skip header, parse 16-bit PCM or IEEE float.
@@ -335,6 +375,7 @@ mod tests {
             transcribe_token: tok("<|transcribe|>", 50359),
             eot_token: tok("<|endoftext|>", 50257),
             no_speech_token: tok("<|nospeech|>", 50362),
+            notimestamps_token: tok("<|notimestamps|>", 50363),
             timestamp_begin_token: 50364,
             max_new_tokens: 128,
             no_speech_threshold: 0.6,

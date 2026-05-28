@@ -71,6 +71,7 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
     let transcribe_token = tok("<|transcribe|>", 50359);
     let eot_token = tok("<|endoftext|>", 50257);
     let no_speech_token = tok("<|nospeech|>", 50362);
+    let notimestamps_token = tok("<|notimestamps|>", 50363);
     let timestamp_begin_token = 50364u32;
     let prevtext_token_id = tokenizer.token_to_id("<|prevtext|>");
 
@@ -78,7 +79,7 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
     let vad = SileroVad::open(&vad_path)?;
 
     let window_cfg = WindowConfig {
-        window_secs: 5.0,
+        max_window_secs: 28.0,
         stride_secs: 1.0,
         vad_threshold: 0.5,
         min_speech_secs: 0.25,
@@ -95,22 +96,34 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
     let (fake_mic, _feeder_handle) = FakeMic::open(&audio_path, false)?;
 
     const WINDOW_SAMPLES: usize = 480_000;
+    const SILENCE_FRAME: [f32; 512] = [0.0f32; 512];
     let mut drain_buf = vec![0.0f32; 4096];
     let mut committed_text = String::new();
+    let mut endpoint_fired_mid_stream = false;
+    let mut silence_pushed_secs = 0.0f32;
 
     loop {
         let n = fake_mic.consumer.lock().unwrap().pop_slice(&mut drain_buf);
-        if n == 0 {
-            if fake_mic.is_done() {
+
+        let window = if n > 0 {
+            silence_pushed_secs = 0.0;
+            match chunker.push(&drain_buf[..n]) {
+                Some(w) => w,
+                None => continue,
+            }
+        } else {
+            // No new audio. Synthesise silence so the chunker keeps striding and the
+            // endpointer can fire naturally after speech stops. Shut down once the file
+            // is exhausted and trailing silence has comfortably exceeded silence_secs.
+            if fake_mic.is_done() && silence_pushed_secs > 3.0 {
                 break;
             }
+            silence_pushed_secs += SILENCE_FRAME.len() as f32 / 16_000.0;
             thread::sleep(Duration::from_millis(1));
-            continue;
-        }
-
-        let window = match chunker.push(&drain_buf[..n]) {
-            Some(w) => w,
-            None => continue,
+            match chunker.push(&SILENCE_FRAME) {
+                Some(w) => w,
+                None => continue,
+            }
         };
 
         let emits = if window.had_speech {
@@ -126,6 +139,7 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
                 sot_token,
                 eot_token,
                 no_speech_token,
+                notimestamps_token,
                 timestamp_begin_token,
                 max_new_tokens: 128,
                 no_speech_threshold: 0.6,
@@ -143,15 +157,17 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
             }
         }
 
-        if endpointer.step(&window, committer.committed_text()) {
+        if endpointer.step(&window, committer.committed_text()) || window.forced_eou {
             let final_delta = committer.finalize_utterance();
             if let CommitDelta::Committed { ref new_text, .. } = final_delta {
                 if !new_text.is_empty() {
                     committed_text.push_str(new_text);
                 }
             }
+            endpoint_fired_mid_stream = true;
             prompt_ctx.update_after_eou(committer.committed_tokens(), 128);
             endpointer.reset();
+            chunker.reset_utterance();
         }
     }
 
@@ -165,15 +181,49 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
 
     eprintln!("Full committed transcript: {committed_text}");
 
-    // The LJ001-0001 reference is:
-    //   "Printing, in the only sense with which we are at present concerned,
-    //    differs from most if not from all the arts and crafts represented in the Exhibition"
-    // Check for at least one of the key phrases (case-insensitive), tolerating minor ASR variance.
-    let lower = committed_text.to_lowercase();
-    let found = lower.contains("printing") || lower.contains("arts") || lower.contains("crafts");
+    // Tightened UAT (post Phase F remediation):
+    // (1) At least one endpoint event must fire mid-stream — driven by `Endpointer::step`
+    //     seeing growing trailing silence — rather than only via the shutdown-path
+    //     `finalize_utterance`. This exercises B3 (silence-tick) end-to-end.
+    // (2) The committed transcript must cover the LJ001-0001 ground truth modulo minor ASR
+    //     variance — measured as token-level overlap against a curated keyword set drawn
+    //     from the reference sentence.
+    //
+    // Reference: "Printing, in the only sense with which we are at present concerned,
+    //             differs from most if not from all the arts and crafts represented in
+    //             the Exhibition"
     assert!(
-        found,
-        "expected transcript to contain 'printing', 'arts', or 'crafts'; got: {committed_text:?}"
+        endpoint_fired_mid_stream,
+        "no endpoint event fired during the stream — silence-tick / endpointer is broken"
+    );
+
+    let lower = committed_text.to_lowercase();
+    let keywords = [
+        "printing",
+        "only",
+        "sense",
+        "which",
+        "present",
+        "concerned",
+        "differs",
+        "most",
+        "from",
+        "all",
+        "arts",
+        "crafts",
+        "represented",
+        "exhibition",
+    ];
+    let hits: Vec<&str> = keywords
+        .iter()
+        .copied()
+        .filter(|kw| lower.contains(kw))
+        .collect();
+    assert!(
+        hits.len() >= 10,
+        "expected ≥10/14 LJ001-0001 keywords; got {} ({:?}) in transcript: {committed_text:?}",
+        hits.len(),
+        hits
     );
 
     Ok(())
