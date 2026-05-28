@@ -21,6 +21,10 @@ pub struct MicCapture {
     pub consumer: Arc<Mutex<ringbuf::HeapCons<f32>>>,
     pub native_sample_rate: u32,
     pub native_channels: u16,
+    /// Cumulative samples dropped because a downstream ring filled up. Non-zero
+    /// values indicate the consumer (typically the decoder) is not keeping up
+    /// with real-time audio arrival.
+    pub dropped_samples: Arc<AtomicU64>,
 }
 
 impl MicCapture {
@@ -165,6 +169,7 @@ impl MicCapture {
             consumer: ring_16khz_cons,
             native_sample_rate,
             native_channels,
+            dropped_samples,
         })
     }
 
@@ -426,6 +431,15 @@ impl CaptureSource {
         match self {
             CaptureSource::Microphone(mic) => mic.native_channels,
             CaptureSource::File(fake) => fake.native_channels,
+        }
+    }
+
+    /// Cumulative samples dropped due to a full downstream ring. Always 0 for file sources.
+    /// A growing value means the consumer (decoder) can't keep up with real-time audio.
+    pub fn dropped_samples(&self) -> u64 {
+        match self {
+            CaptureSource::Microphone(mic) => mic.dropped_samples.load(Ordering::Relaxed),
+            CaptureSource::File(_) => 0,
         }
     }
 

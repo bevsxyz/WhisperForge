@@ -264,9 +264,31 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
     // any non-empty pop_samples. Used to (a) keep the chunker striding so the endpointer can
     // fire naturally after speech stops, and (b) cleanly shut down file-fed runs.
     let mut silence_pushed_secs = 0.0f32;
+    // Drop telemetry: log to stderr whenever the cumulative dropped count grows.
+    // A growing count means the decoder isn't draining the 16 kHz ring fast enough
+    // and audio is being silently lost — corrupts VAD state and transcripts.
+    let mut last_dropped = 0u64;
+    let mut last_drop_log = std::time::Instant::now();
 
     while !shutdown.load(Ordering::SeqCst) {
         let n = source.pop_samples(&mut drain_buf);
+
+        // Surface dropped-sample counter once per second when it changes.
+        if last_drop_log.elapsed() >= Duration::from_secs(1) {
+            let total = source.dropped_samples();
+            if total > last_dropped {
+                let delta = total - last_dropped;
+                eprintln!(
+                    "[audio] dropped {} samples last second ({:.2} s of audio); total dropped: {} ({:.2} s). Decoder is not keeping up with real-time input.",
+                    delta,
+                    delta as f32 / 16_000.0,
+                    total,
+                    total as f32 / 16_000.0
+                );
+                last_dropped = total;
+            }
+            last_drop_log = std::time::Instant::now();
+        }
 
         let window = if n > 0 {
             silence_pushed_secs = 0.0;
