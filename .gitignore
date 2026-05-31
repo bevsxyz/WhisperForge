@@ -16,6 +16,9 @@ target/
 # Temporary / generated test files (not the committed LJSpeech fixtures)
 *.tmp.wav
 test_data/*_16k.wav
+# …except the LJ001-0001 16 kHz clip — a required fixture for the streaming
+# integration tests and scripts/uat-stream.ps1 (FakeMic needs exactly 16 kHz).
+!test_data/LJ001-0001_16k.wav
 
 # Audio inputs (MP3 support planned)
 *.mp3
