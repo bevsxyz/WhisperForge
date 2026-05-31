@@ -35,9 +35,10 @@ cargo run --release -p whisperforge -- list-models
 # Stream realtime transcription from microphone
 cargo run --release -p whisperforge -- stream --model tiny_en_converted
 
-# Stream from file (synthetic mic, offline speed, JSON output)
+# Stream from file (synthetic mic, offline speed, JSON output).
+# --from-file requires a 16 kHz mono WAV (FakeMic does not resample).
 cargo run --release -p whisperforge -- stream --model tiny_en_converted \
-  --from-file whisperforge-core/tests/data/ljspeech_sample.wav \
+  --from-file test_data/LJ001-0001_16k.wav \
   --no-realtime --json
 
 # Build with native CUDA (requires CUDA toolkit + nvcc on host)
@@ -164,7 +165,9 @@ Goal was to clean the crate / CLI surface before streaming work. Targets 0.4.0 (
 - ⏸ Commit 6 (VRAM-aware encoder-batch auto-tune) — **deferred**. Heuristics had a poor cost/risk ratio (extra deps for sysinfo + wgpu adapter probe + WSL/integrated-GPU reporting quirks vs. a modest UX win nobody had asked for). Users override with `--encoder-batch-size` for now.
 - ⏸ Commit 7 (Windows wgpu runtime fallback) — **deferred**. Upstream `windows`-crate version conflict between wgpu-hal and gpu-allocator is *compile-time*; no runtime probe can rescue it. Windows still ships CPU-only via release.yml `--no-default-features`. Revisit when `grep -A1 'name = "windows"' Cargo.lock` shows one version.
 
-### Phase F — Streaming Realtime ✅ COMPLETE
+### Phase F — Streaming Realtime ✅ COMPLETE (UAT-certified)
+
+**UAT (2026-05-31):** `scripts/uat-stream.ps1` passed on a native Windows box across **all three backends (cpu / cuda / wgpu)** — accuracy 14/14 LJ keywords at `--max-window-secs 28`, and real-time keep-up with **zero dropped samples at stride 1 s** on every backend, including WGPU. All three produced byte-identical transcripts, confirming decode parity. (The WSL2-measured ~3.5 s/window WGPU figure in the "Live-mic perf ceiling" note below is a software-rasterizer artifact, not inherent to WGPU on a real GPU.)
 
 End-to-end realtime ASR: `cpal` mic input → Silero VAD gating (32 ms frames, ONNX) → growing-buffer chunker (5 s cap / 1 s stride; forces EOU at cap to bound per-window decode) → per-window encode + greedy decode → LocalAgreement-2 committer (longest stable prefix across successive decodes) → silence + punctuation endpointer → `<|prevtext|>` prompt context carried across utterances → output sinks: crossterm terminal UI (committed / tentative line), NDJSON (`--json`), WAV recorder (`--record-to`), transcript file (`--transcript-to`). Synthetic-mic (`--from-file --no-realtime`) enables offline testing and CI without a physical device.
 
@@ -179,7 +182,7 @@ End-to-end realtime ASR: `cpal` mic input → Silero VAD gating (32 ms frames, O
 
 **WSL2 note:** `cpal` on WSL2 requires a PulseAudio bridge. Use `--from-file` for all testing on WSL2.
 
-**Live-mic perf ceiling — tiny.en + CPU is decode-bound, not encoder-bound.** Autoregressive decode is O(tokens × ~100 ms) on Burn's CPU backend, so per-window cost is dominated by however many tokens the model emits. WGPU is **worse** for this workload, not better: the encoder is comparable to CPU but the per-token dispatch tax pushes the autoregressive loop to ~3.5 s per window. **Defaults are tuned for CPU**: `--device cpu`, `stride_secs=1.0`, `max_window_secs=5.0`, hardcoded `max_new_tokens=32`. The 5 s cap bounds the decoder at ~25 tokens (≈ 2.5 s wall-clock) on real speech, comfortably under the 1 s stride. Drops are surfaced on stderr (`[audio] dropped … samples last second …`) so silent loss is impossible; per-window mel/enc/dec latency is at `tracing::debug` (enable with `RUST_LOG=whisperforge=debug`).
+**Live-mic perf ceiling — tiny.en + CPU is decode-bound, not encoder-bound.** Autoregressive decode is O(tokens × ~100 ms) on Burn's CPU backend, so per-window cost is dominated by however many tokens the model emits. **WGPU under WSL2** (software rasterizer / no real GPU) is *worse* than CPU here — the per-token dispatch tax pushes the autoregressive loop to ~3.5 s per window. **But on a real discrete GPU (native Windows/Linux) WGPU sustains real-time at stride 1 s** — verified by the 3-backend UAT above; the ~3.5 s figure is a WSL2 artifact, not inherent to WGPU. **Defaults are still tuned for CPU** (the lowest-common-denominator backend): `--device cpu` (via `auto` fallback), `stride_secs=1.0`, `max_window_secs=5.0`, hardcoded `max_new_tokens=32`. The 5 s cap bounds the decoder at ~25 tokens (≈ 2.5 s wall-clock) on real speech, comfortably under the 1 s stride. Drops are surfaced on stderr (`[audio] dropped … samples last second …`) so silent loss is impossible; per-window mel/enc/dec latency is at `tracing::debug` (enable with `RUST_LOG=whisperforge=debug`).
 
 Long-form utterances stay continuous via **stride-based buffer trimming on cap-hit** (commit B9). On each cap-hit window (`max_window_secs` reached), the main loop drops the oldest 1.5 s (VAD-frame-aligned) from the chunker buffer and calls `Committer::on_trim`, which **force-commits the tentative tail** of the most recent decode (everything past the last LCP boundary) and clears `last_candidate`. The next stride establishes a fresh LCP baseline; the stride after that resumes ordinary LCP commits. The utterance continues as one continuous commit stream with no endpoint event. A `cap_pending_handler` flag on the chunker escalates to `forced_eou` if the trim path is unavailable on two consecutive caps (e.g. no prior commits to anchor against) — utterances split into endpoint events only in that fallback case.
 

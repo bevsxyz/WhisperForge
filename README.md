@@ -141,7 +141,9 @@ cargo fmt --all && cargo clippy --all-targets --all-features
 
 `wforge stream` delivers always-on local transcription that emits partial results as you speak. The pipeline is: microphone → Silero VAD (32 ms frames) → growing-buffer chunker (5 s cap / 1 s stride) → per-window Whisper encode + greedy decode → confidence gate (log-prob + compression-ratio, faster-whisper parity) → LocalAgreement-2 committer (tokens stable across two consecutive decodes are permanently emitted) → silence + punctuation endpointer → output sinks.
 
-Long utterances stay on one continuous commit stream via **stride-based buffer trimming on cap-hit**: when the buffer reaches `--max-window-secs`, the chunker drops the oldest 1.5 s, the committer force-commits its tentative tail, and the next stride establishes a fresh LCP baseline. ~30% of mid-utterance content can be dropped at trim seams as a known trade-off (Whisper's non-causal encoder produces different tokens for the same audio across different buffer sizes); raising `--max-window-secs` for shorter utterances avoids any trims. See CLAUDE.md § "Live-mic perf ceiling" for the full breakdown.
+Long utterances stay on one continuous commit stream via **stride-based buffer trimming on cap-hit**: when the buffer reaches `--max-window-secs`, the chunker drops the oldest 1.5 s, the committer force-commits its tentative tail, and the next stride establishes a fresh LCP baseline. ~30% of mid-utterance content can be dropped at trim seams as a known, accepted trade-off (Whisper's non-causal encoder produces different tokens for the same audio across different buffer sizes). The happy path (dictation/conversation with natural pauses) resets per utterance and never hits a cap, so it's unaffected; for **continuous multi-minute monologue** the supported path is **`--max-window-secs 28`** (no caps → no trim seams). See CLAUDE.md § "Live-mic perf ceiling" for the full breakdown.
+
+Streaming is UAT-certified across all three backends (cpu / cuda / wgpu) via `scripts/uat-stream.ps1`.
 
 ```bash
 # Transcribe from the default microphone (committed text appears in real time)
@@ -180,7 +182,7 @@ wforge stream --list-input-devices
 | `--json` | off | NDJSON output to stdout |
 | `--record-to <path>` | — | Tee 16 kHz mono WAV |
 | `--transcript-to <path>` | — | Append `[mm:ss–mm:ss] text` lines |
-| `--from-file <path>` | — | Feed a WAV instead of microphone |
+| `--from-file <path>` | — | Feed a **16 kHz mono** WAV instead of microphone (not resampled) |
 | `--no-realtime` | off | Feed file at max speed (offline mode) |
 | `--no-color` | off | Disable ANSI styling |
 
