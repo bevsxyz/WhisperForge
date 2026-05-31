@@ -38,7 +38,7 @@ A high-performance Rust implementation of OpenAI's Whisper speech-to-text model 
 | SRT / JSON / text output | ✅ Complete |
 | GPU acceleration (WGPU: Vulkan/DX12/Metal) | ✅ Complete |
 | Native CUDA backend (CubeCL) | ✅ Complete (feature `cuda`) |
-| Single `wforge` CLI: `transcribe` / `convert` / `list-models` | ✅ Complete |
+| Single `wforge` CLI: `transcribe` / `pull` / `list` / `stream` | ✅ Complete |
 | Speaker diarization (encoder embeddings) | ✅ Complete |
 | INT8 quantization (~4× compression) | ✅ Complete |
 | Realtime streaming (mic input, token-level output) | ✅ Complete (Phase F) |
@@ -88,8 +88,8 @@ use burn_flex::{Flex, FlexDevice};
 use tokenizers::Tokenizer;
 
 let device = FlexDevice;
-let model = load_whisper::<Flex<f32>>("models/tiny_en_converted/model", &device)?;
-let tokenizer = Tokenizer::from_file("models/tiny_en_converted/tokenizer.json")?;
+let model = load_whisper::<Flex<f32>>("models/tiny.en/model", &device)?;
+let tokenizer = Tokenizer::from_file("models/tiny.en/tokenizer.json")?;
 let transcriber = WhisperTranscriber::new(model, tokenizer, DecodingConfig::default());
 
 let audio = load_audio_file("speech.wav")?;
@@ -104,25 +104,29 @@ println!("{}", result.text);
 After [installing](#installation), grab a model and transcribe:
 
 ```bash
-# 1. Convert a Whisper model from HuggingFace (creates models/tiny_en/ with model.{mpk,cfg} + tokenizer.json)
-wforge convert --model-id openai/whisper-tiny.en --output models/tiny_en
+# 1. Pull a model — a friendly alias maps to openai/whisper-<alias> and auto-names the dir
+wforge pull tiny.en
 
-# 2. Transcribe (auto-selects WGPU when compiled in; override with --device cpu|wgpu|cuda)
-wforge transcribe -a audio.wav -m tiny_en
+# 2. Transcribe (audio is positional; auto-selects WGPU when compiled in)
+wforge transcribe audio.wav -m tiny.en
 
-# Browse converted models (honors --models-dir / WF_MODELS_DIR)
-wforge list-models
+# Browse models, audio devices, and compute backends (bare `list` shows all three)
+wforge list models
 
 # SRT with speaker labels
-wforge transcribe -a audio.wav -m tiny_en --output-format srt --diarize -o output.srt
+wforge transcribe audio.wav -m tiny.en --format srt --diarize -o output.srt
 
 # JSON output
-wforge transcribe -a audio.wav --output-format json
+wforge transcribe audio.wav --format json
 
 # Native CUDA (CubeCL) — requires CUDA toolkit at build time
 cargo install whisperforge --features cuda
-wforge transcribe -a audio.wav -m tiny_en --device cuda
+wforge transcribe audio.wav -m tiny.en --device cuda
 ```
+
+> Run `wforge transcribe audio.wav` with no `-m` on a terminal and you'll be prompted to
+> pick from your installed models. `pull` also accepts a raw HF id (`org/my-model`) or a
+> local path to a fine-tuned `.safetensors` file.
 
 ### For Contributors
 
@@ -147,35 +151,38 @@ Streaming is UAT-certified across all three backends (cpu / cuda / wgpu) via `sc
 
 ```bash
 # Transcribe from the default microphone (committed text appears in real time)
-wforge stream --model tiny_en_converted
+wforge stream --model tiny.en
+
+# Long continuous monologue — fewer trim seams (28 s window)
+wforge stream --model tiny.en --preset dictation
 
 # From file — no microphone needed, runs faster than real time
-wforge stream --model tiny_en_converted \
+wforge stream --model tiny.en \
   --from-file audio.wav --no-realtime --json
 
 # Record the captured audio while streaming
-wforge stream --model tiny_en_converted --record-to /tmp/session.wav
+wforge stream --model tiny.en --record-to /tmp/session.wav
 
 # Append each committed sentence to a transcript file
-wforge stream --model tiny_en_converted --transcript-to /tmp/transcript.txt
+wforge stream --model tiny.en --transcript-to /tmp/transcript.txt
 
 # List available input devices
-wforge stream --list-input-devices
+wforge list devices
 ```
 
 **Key flags:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model <name>` | required | Converted model name under `models/` |
+| `--model <name>` | picker / `tiny.en` | Converted model name (omit on a TTY to pick interactively) |
+| `--preset <conversation\|dictation>` | `conversation` | Window/endpointing bundle; individual flags override |
 | `--device <auto\|cpu\|wgpu\|cuda>` | `auto` | Backend selection |
-| `--input-device <name>` | system default | Named cpal input device |
-| `--list-input-devices` | — | Print host/device list and exit |
-| `--max-window-secs <f32>` | `5.0` | Hard cap on the growing decode buffer; cap-hit triggers a stride-based trim |
-| `--stride-secs <f32>` | `1.0` | Stride between successive windows |
+| `--input-device <name>` | system default | Named cpal input device (see `wforge list devices`) |
+| `--max-window-secs <f32>` | preset (5.0) | Hard cap on the growing decode buffer; cap-hit triggers a stride-based trim |
+| `--stride-secs <f32>` | preset (1.0) | Stride between successive windows |
 | `--vad-threshold <f32>` | `0.5` | Silero VAD speech probability threshold |
-| `--silence-secs <f32>` | `2.0` | Hard end-of-utterance silence |
-| `--punct-silence-secs <f32>` | `0.8` | Soft EOU after terminal punctuation |
+| `--silence-secs <f32>` | preset (2.0) | Hard end-of-utterance silence |
+| `--punct-silence-secs <f32>` | preset (0.8) | Soft EOU after terminal punctuation |
 | `--prompt-tokens <usize>` | `0` | `<\|prevtext\|>` carry-over tokens (off by default — non-zero can lock the decoder into hallucination loops on quiet audio) |
 | `--logprob-threshold <f32>` | `-1.0` | Reject windows whose avg token log-prob falls below this (faster-whisper parity) |
 | `--compression-ratio-threshold <f32>` | `2.4` | Reject windows whose gzip compression ratio exceeds this — kills repetition/hallucination loops |
@@ -190,27 +197,31 @@ wforge stream --list-input-devices
 
 ## Model Files
 
-Model weights are git-ignored. Convert from HuggingFace using the built-in `wforge convert` subcommand:
+Model weights are git-ignored. Fetch/convert with the built-in `wforge pull` subcommand:
 
 ```bash
-# Basic: download and convert to Burn format
-wforge convert --model-id openai/whisper-tiny.en --output models/tiny_en_converted
+# Friendly alias → openai/whisper-tiny.en, stored as models/tiny.en/
+wforge pull tiny.en
 
 # Quantized: INT8 compression (37 MB vs 150 MB for tiny.en)
-wforge convert --model-id openai/whisper-tiny.en --output models/tiny_en_quantized --quantize int8
+wforge pull tiny.en --name tiny.en-int8 --quantize int8
 
-# From local file instead of downloading
-wforge convert --local-safetensors /path/to/model.safetensors --output models/tiny_en_converted
+# Raw HuggingFace id (community / fine-tuned repos)
+wforge pull org/my-whisper-model
+
+# Local fine-tuned model — a .safetensors file (or a dir with model.safetensors + tokenizer.json)
+wforge pull /path/to/model.safetensors --name my-finetuned
 ```
 
-**Converter options:**
+Models land under the resolved models directory: `--models-dir` → `$WF_MODELS_DIR` → `./models/` if present → platform cache dir (`~/.cache/whisperforge/models`).
 
-| Flag | Default | Description |
+**`pull` options:**
+
+| Arg/Flag | Default | Description |
 |------|---------|-------------|
-| `--model-id` | `openai/whisper-tiny.en` | HuggingFace model identifier |
-| `--output` | required | Output model directory (created and populated with `model.mpk`, `model.cfg`, `tokenizer.json`) |
+| `<MODEL>` | required | Friendly alias, raw HF id (`org/model`), or a local `.safetensors` path / dir |
+| `--name` | derived from MODEL | Override the directory name the model is stored under |
 | `--quantize` | `none` | Quantization: `none` (FP32) or `int8` (~4× compression) |
-| `--local-safetensors` | — | Load from local safetensors file instead of downloading |
 
 **Generated files** — each model is a self-contained directory under `models/`:
 ```
@@ -221,73 +232,58 @@ models/
     └── tokenizer.json      # BPE tokenizer (per-model — multilingual vs .en differ)
 ```
 
-Both the CLI and library load models from `models/<model_name>/`. The library `load_whisper` takes the `model` stem (e.g. `models/tiny_en/model`); the tokenizer lives alongside it.
+Both the CLI and library load models from `<models-dir>/<model_name>/`. The library `load_whisper` takes the `model` stem (e.g. `models/tiny.en/model`); the tokenizer lives alongside it.
 
 ## CLI Reference
 
 `wforge` — GPU-accelerated Whisper transcription from the command line.
 
 ```
-wforge <COMMAND>
+wforge [--models-dir <PATH>] <COMMAND>   # --models-dir is global (or set WF_MODELS_DIR)
 
 Commands:
-  transcribe   Transcribe an audio file to text, SRT, or JSON
-  convert      Convert a HuggingFace Whisper safetensors model to Burn `.mpk` format
+  transcribe   Transcribe an audio file to text, SRT, VTT, or JSON
+  pull         Download (or import) a Whisper model and convert it to Burn `.mpk` (alias: convert)
+  list         List models, audio devices, or compute backends
   stream       Realtime streaming transcription from microphone or file
+  completions  Generate a shell completion script
 
-wforge transcribe [OPTIONS]
-  -a, --audio-file <FILE>          Input audio file (WAV, MP3, FLAC, OGG, M4A)
-  -m, --model <MODEL>              Model name under models/ [default: tiny_en_converted]
-  -l, --language <LANG>            Language code [default: en]
+wforge transcribe <AUDIO> [OPTIONS]
+  <AUDIO>                          Input audio file (WAV, MP3, FLAC, OGG, M4A)
+  -m, --model <MODEL>              Model name (omit on a TTY to pick interactively; else tiny.en)
+  -l, --language <LANG>            Language code, or `auto` [default: en]
+      --task <TASK>                transcribe | translate (X→English) [default: transcribe]
   -o, --output <FILE>              Write output to file
-      --output-format <FMT>        text | srt | json [default: text]
-      --decoding-preset <PRESET>   fast | balanced | accurate [default: balanced]
-      --beam-size <N>              Override beam size
-      --temperature <F>            Override sampling temperature
-      --length-penalty <F>         Override length penalty
-      --no-speech-threshold <F>    No-speech detection threshold
-      --models-dir <PATH>          Directory holding `.mpk`/`.cfg` models (or set WF_MODELS_DIR)
-      --vad-enabled                Enable voice activity detection
-      --vad-threshold <F>          VAD detection threshold (0.0–1.0) [default: 0.5]
+  -f, --format <FMT>               text | srt | vtt | json [default: text]   (srt/vtt/json carry timestamps)
+      --preset <PRESET>            fast | balanced | accurate [default: balanced]
       --device <DEVICE>            auto | cpu | wgpu | cuda [default: auto]
-      --diarize                    Enable speaker diarization
-      --diarize-threshold <F>      Cosine similarity threshold [default: 0.7]
-      --encoder-batch-size <N>     Encoder forward-pass batch size
+  (see `--help` for grouped Advanced decoding / VAD / Diarization / Tuning flags)
 
-wforge list-models [OPTIONS]
-      --models-dir <PATH>          Directory to scan for `.mpk` models (or set WF_MODELS_DIR)
-
-wforge convert [OPTIONS]
-      --model-id <ID>              HuggingFace model ID [default: openai/whisper-tiny.en]
-      --output <PATH>              Output model directory (required); gets model.{mpk,cfg} + tokenizer.json
-      --local-safetensors <PATH>   Load from local safetensors file instead of downloading
+wforge pull <MODEL> [OPTIONS]
+  <MODEL>                          Alias (tiny.en), HF id (org/model), or local .safetensors path/dir
+      --name <NAME>                Override the stored directory name
       --quantize <MODE>            none | int8 [default: none]
 
+wforge list [models|devices|backends] [--json]   # default: all
+
+wforge completions <bash|zsh|fish|powershell|elvish>   # e.g. `wforge completions zsh > _wforge`
+
 wforge stream [OPTIONS]
-  -m, --model <MODEL>              Model name under models/ (required)
-      --models-dir <PATH>          Directory holding `.mpk`/`.cfg` models (or set WF_MODELS_DIR)
+  -m, --model <MODEL>              Model name (omit on a TTY to pick interactively)
+      --preset <PRESET>            conversation | dictation [default: conversation]
       --device <DEVICE>            auto | cpu | wgpu | cuda [default: auto]
-      --input-device <NAME>        Named cpal input device (default: system default)
-      --list-input-devices         Print available input devices and exit
-      --max-window-secs <F>        Hard cap on growing decode buffer in seconds [default: 5.0]
-      --stride-secs <F>            Stride between windows in seconds [default: 1.0]
-      --vad-threshold <F>          Silero VAD threshold [default: 0.5]
-      --silence-secs <F>           Hard end-of-utterance silence [default: 2.0]
-      --punct-silence-secs <F>     Soft EOU after terminal punctuation [default: 0.8]
-      --prompt-tokens <N>          <|prevtext|> carry-over tokens, 0 = disabled [default: 0]
-      --json                       NDJSON output to stdout
-      --record-to <PATH>           Tee 16 kHz mono WAV to file
-      --transcript-to <PATH>       Append committed lines to text file
-      --no-color                   Disable ANSI styling
-      --from-file <PATH>           Feed a WAV file instead of microphone
+      --input-device <NAME>        Named cpal input device (see `wforge list devices`)
+      --from-file <PATH>           Feed a 16 kHz mono WAV instead of microphone
       --no-realtime                Feed file at max speed (offline mode)
+      --json                       NDJSON output to stdout
+  (see `--help` for grouped Window/Endpointing/Quality-gate/Output flags)
 ```
 
-**Available models:**
-- `tiny.en` — English-only, 39M parameters
-- `base`, `small`, `medium`, `large-v2`, `large-v3` — Multilingual
+**Available models:** any Whisper checkpoint on HuggingFace. Common aliases:
+- `tiny.en`, `base.en`, `small.en`, `medium.en` — English-only
+- `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3`, `large-v3-turbo` — Multilingual
 
-All models are converted from OpenAI's [HuggingFace releases](https://huggingface.co/openai) via `wforge convert`.
+All aliases resolve to OpenAI's [HuggingFace releases](https://huggingface.co/openai) via `wforge pull`.
 
 ## Architecture
 
