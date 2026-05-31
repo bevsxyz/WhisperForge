@@ -22,7 +22,7 @@ use whisperforge_diarize::DiarizationConfig;
 use whisperforge_core::{Model, WhisperConfig};
 
 let config = WhisperConfig::tiny_en();
-let model = Model::load(Path::new("models/tiny_en_converted"))?;
+let model = Model::load(Path::new("models/tiny_en_converted/model"))?;
 
 // With CLI: use --diarize flag
 // wforge transcribe -a audio.wav -m tiny_en_converted --diarize

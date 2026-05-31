@@ -35,7 +35,8 @@ pub struct ConvertArgs {
     #[arg(long, default_value = "openai/whisper-tiny.en")]
     pub model_id: String,
 
-    /// Output path without extension (e.g., models/tiny_en_converted)
+    /// Output model directory (e.g., models/tiny_en_converted). The directory is
+    /// created and populated with `model.mpk`, `model.cfg`, and `tokenizer.json`.
     #[arg(long)]
     pub output: String,
 
@@ -65,17 +66,13 @@ pub fn run(args: ConvertArgs) -> Result<()> {
 async fn run_async(args: ConvertArgs) -> Result<()> {
     let device = FlexDevice;
 
-    let output_path = std::path::Path::new(&args.output);
+    // `--output` names the per-model directory; weights/config/tokenizer all live inside it.
+    let model_dir = std::path::Path::new(&args.output);
+    std::fs::create_dir_all(model_dir).context("creating model output directory")?;
 
-    // Both the CLI and benchmark test expect {output_dir}/tokenizer.json.
-    let tokenizer_dest = output_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .join("tokenizer.json");
-
-    if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent).context("creating output directory")?;
-    }
+    // Weights/config share a fixed `model` stem; the loader appends `.mpk`/`.cfg`.
+    let output_path = model_dir.join("model");
+    let tokenizer_dest = model_dir.join("tokenizer.json");
 
     let safetensors_path = if let Some(local_path) = &args.local_safetensors {
         let local_tokenizer = std::path::Path::new(local_path).with_file_name("tokenizer.json");
@@ -131,7 +128,7 @@ async fn run_async(args: ConvertArgs) -> Result<()> {
         Quantize::Int8 => Precision::Int8,
     };
 
-    convert_openai_to_burn::<B>(&safetensors_path, output_path, &device, precision)?;
+    convert_openai_to_burn::<B>(&safetensors_path, &output_path, &device, precision)?;
 
     println!("Done!");
     Ok(())
@@ -866,12 +863,16 @@ mod tests {
     #[test]
     fn test_convert_tiny_en() {
         let input_path = models_dir().join("tiny_en_openai.safetensors");
-        let output_path = models_dir().join("tiny_en_converted");
+        let model_dir = models_dir().join("tiny_en_converted");
 
         if !input_path.exists() {
             eprintln!("Skipping: model not found at {:?}", input_path);
             return;
         }
+
+        std::fs::create_dir_all(&model_dir).unwrap();
+        // Per-model layout: weights/config live at `<name>/model.{mpk,cfg}`.
+        let output_path = model_dir.join("model");
 
         let device = FlexDevice;
 

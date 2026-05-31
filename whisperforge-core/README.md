@@ -25,7 +25,7 @@ use whisperforge_core::{Model, WhisperConfig};
 use std::path::Path;
 
 let config = WhisperConfig::tiny_en();
-let model = Model::load(Path::new("models/tiny_en_converted"))?;
+let model = Model::load(Path::new("models/tiny_en_converted/model"))?;
 let transcript = model.transcribe(audio_samples, sample_rate)?;
 println!("{}", transcript);
 ```

@@ -3,7 +3,7 @@
 /// Run with:
 ///   cargo test -p whisperforge-core --test wer_benchmark -- --ignored --nocapture
 ///
-/// Requires models/tiny_en_converted.{mpk,cfg} and models/tokenizer.json.
+/// Requires models/tiny_en_converted/model.{mpk,cfg} and models/tiny_en_converted/tokenizer.json.
 /// Audio fixtures are in test_data/ (tracked via git LFS).
 use anyhow::{Context, Result};
 use burn::tensor::{Int, Tensor, TensorData};
@@ -272,11 +272,12 @@ fn transcribe(
 // ── benchmark test ────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "requires models/tiny_en_converted.{mpk,cfg} and models/tokenizer.json"]
+#[ignore = "requires models/tiny_en_converted/model.{mpk,cfg} and models/tiny_en_converted/tokenizer.json"]
 fn test_wer_benchmark_tiny_en() {
     let root = workspace_root();
-    let model_path = root.join("models/tiny_en_converted");
-    let tokenizer_path = root.join("models/tokenizer.json");
+    let model_dir = root.join("models/tiny_en_converted");
+    let model_path = model_dir.join("model");
+    let tokenizer_path = model_dir.join("tokenizer.json");
 
     if !model_path.with_extension("mpk").exists() {
         eprintln!("SKIP: model not found at {}", model_path.display());
