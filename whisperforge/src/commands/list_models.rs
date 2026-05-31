@@ -10,6 +10,13 @@ pub const DEFAULT_MODELS_DIR: &str = "models";
 /// Env var that overrides the default models directory; CLI `--models-dir` still wins.
 pub const MODELS_DIR_ENV: &str = "WF_MODELS_DIR";
 
+/// Fixed stem for the weights/config inside a model's own directory
+/// (`<models_dir>/<name>/model.mpk` + `model.cfg`).
+pub const MODEL_STEM: &str = "model";
+
+/// Per-model tokenizer filename (`<models_dir>/<name>/tokenizer.json`).
+pub const TOKENIZER_FILE: &str = "tokenizer.json";
+
 #[derive(Parser, Debug)]
 pub struct ListModelsArgs {
     /// Directory to scan for `*.mpk` model files. Defaults to `$WF_MODELS_DIR` or `./models/`.
@@ -31,9 +38,21 @@ pub fn resolve_models_dir(cli_arg: Option<&Path>) -> PathBuf {
     PathBuf::from(DEFAULT_MODELS_DIR)
 }
 
-/// Base path (no extension) of a model living under `dir`, e.g. `dir/<name>`.
-pub fn model_base_path(dir: &Path, name: &str) -> PathBuf {
+/// Directory holding a single converted model's files (`model.mpk`/`model.cfg`
+/// + its own `tokenizer.json`), e.g. `dir/<name>/`.
+pub fn model_dir_path(dir: &Path, name: &str) -> PathBuf {
     dir.join(name)
+}
+
+/// Base path (no extension) of a model's weights/config inside its own directory,
+/// e.g. `dir/<name>/model`. `load_whisper` appends `.mpk`/`.cfg`.
+pub fn model_base_path(dir: &Path, name: &str) -> PathBuf {
+    model_dir_path(dir, name).join(MODEL_STEM)
+}
+
+/// Path to a model's own `tokenizer.json` (per-model, not shared across the dir).
+pub fn model_tokenizer_path(dir: &Path, name: &str) -> PathBuf {
+    model_dir_path(dir, name).join(TOKENIZER_FILE)
 }
 
 pub fn run(args: ListModelsArgs) -> Result<()> {
@@ -53,16 +72,21 @@ pub fn run(args: ListModelsArgs) -> Result<()> {
     {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().is_none_or(|e| e != "mpk") {
+        // Each model is a directory `<dir>/<name>/` holding `model.mpk` + `model.cfg`.
+        if !path.is_dir() {
+            continue;
+        }
+        let mpk_path = path.join(MODEL_STEM).with_extension("mpk");
+        if !mpk_path.exists() {
             continue;
         }
         let name = path
-            .file_stem()
+            .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        let cfg_path = path.with_extension("cfg");
+        let size = std::fs::metadata(&mpk_path).map(|m| m.len()).unwrap_or(0);
+        let cfg_path = path.join(MODEL_STEM).with_extension("cfg");
         let (precision, n_audio_layer, n_mels) = match read_cfg(&cfg_path) {
             Ok(cfg) => (
                 precision_label(cfg.precision),

@@ -4,8 +4,8 @@
 ///   cargo test --release -p whisperforge-core --test stream_integration -- --ignored --nocapture
 ///
 /// Requires:
-///   models/tiny_en_converted.{mpk,cfg}
-///   models/tokenizer.json
+///   models/tiny_en_converted/model.{mpk,cfg}
+///   models/tiny_en_converted/tokenizer.json
 ///   models/silero_vad.onnx  (or will be auto-downloaded)
 ///   test_data/LJ001-0001_16k.wav
 ///
@@ -41,9 +41,11 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
     let models_dir = root.join("models");
     let audio_path = root.join("test_data/LJ001-0001_16k.wav");
 
-    // Skip if required files are absent.
-    let model_mpk = models_dir.join("tiny_en_converted.mpk");
-    let tokenizer_path = models_dir.join("tokenizer.json");
+    // Skip if required files are absent. Per-model layout: `<name>/model.{mpk,cfg}`
+    // + `<name>/tokenizer.json`.
+    let model_dir = models_dir.join("tiny_en_converted");
+    let model_mpk = model_dir.join("model.mpk");
+    let tokenizer_path = model_dir.join("tokenizer.json");
     if !model_mpk.exists() {
         eprintln!("SKIP: {} not found", model_mpk.display());
         return Ok(());
@@ -58,7 +60,7 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
     }
 
     let device = FlexDevice;
-    let base = models_dir.join("tiny_en_converted");
+    let base = model_dir.join("model");
     let model: Whisper<B> =
         whisperforge_core::load::load_whisper(base.to_str().expect("valid path"), &device)?;
 
@@ -249,15 +251,16 @@ fn test_stream_pipeline_long_form_trim() -> Result<()> {
     let models_dir = root.join("models");
     let audio_path = root.join("test_data/LJ001-0001_16k.wav");
 
-    let model_mpk = models_dir.join("tiny_en_converted.mpk");
-    let tokenizer_path = models_dir.join("tokenizer.json");
+    let model_dir = models_dir.join("tiny_en_converted");
+    let model_mpk = model_dir.join("model.mpk");
+    let tokenizer_path = model_dir.join("tokenizer.json");
     if !model_mpk.exists() || !tokenizer_path.exists() || !audio_path.exists() {
         eprintln!("SKIP: missing model or audio fixtures");
         return Ok(());
     }
 
     let device = FlexDevice;
-    let base = models_dir.join("tiny_en_converted");
+    let base = model_dir.join("model");
     let model: Whisper<B> =
         whisperforge_core::load::load_whisper(base.to_str().expect("valid path"), &device)?;
     let tokenizer = Tokenizer::from_file(&tokenizer_path)

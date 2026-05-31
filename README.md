@@ -88,8 +88,8 @@ use burn_flex::{Flex, FlexDevice};
 use tokenizers::Tokenizer;
 
 let device = FlexDevice;
-let model = load_whisper::<Flex<f32>>("models/tiny_en_converted", &device)?;
-let tokenizer = Tokenizer::from_file("models/tokenizer.json")?;
+let model = load_whisper::<Flex<f32>>("models/tiny_en_converted/model", &device)?;
+let tokenizer = Tokenizer::from_file("models/tiny_en_converted/tokenizer.json")?;
 let transcriber = WhisperTranscriber::new(model, tokenizer, DecodingConfig::default());
 
 let audio = load_audio_file("speech.wav")?;
@@ -104,7 +104,7 @@ println!("{}", result.text);
 After [installing](#installation), grab a model and transcribe:
 
 ```bash
-# 1. Convert a Whisper model from HuggingFace (writes models/tiny_en.{mpk,cfg} + tokenizer.json)
+# 1. Convert a Whisper model from HuggingFace (creates models/tiny_en/ with model.{mpk,cfg} + tokenizer.json)
 wforge convert --model-id openai/whisper-tiny.en --output models/tiny_en
 
 # 2. Transcribe (auto-selects WGPU when compiled in; override with --device cpu|wgpu|cuda)
@@ -208,19 +208,20 @@ wforge convert --local-safetensors /path/to/model.safetensors --output models/ti
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--model-id` | `openai/whisper-tiny.en` | HuggingFace model identifier |
-| `--output` | required | Output path without extension (generates `.mpk` + `.cfg`) |
+| `--output` | required | Output model directory (created and populated with `model.mpk`, `model.cfg`, `tokenizer.json`) |
 | `--quantize` | `none` | Quantization: `none` (FP32) or `int8` (~4× compression) |
 | `--local-safetensors` | — | Load from local safetensors file instead of downloading |
 
-**Generated files:**
+**Generated files** — each model is a self-contained directory under `models/`:
 ```
 models/
-├── <model_name>.mpk        # Burn model weights
-├── <model_name>.cfg        # Metadata (precision, config)
-└── tokenizer.json          # BPE tokenizer (shared across models)
+└── <model_name>/
+    ├── model.mpk           # Burn model weights
+    ├── model.cfg           # Metadata (precision, config)
+    └── tokenizer.json      # BPE tokenizer (per-model — multilingual vs .en differ)
 ```
 
-Both the CLI and library load models from `models/`. When embedding the library, provide your model directory path at runtime.
+Both the CLI and library load models from `models/<model_name>/`. The library `load_whisper` takes the `model` stem (e.g. `models/tiny_en/model`); the tokenizer lives alongside it.
 
 ## CLI Reference
 
@@ -258,7 +259,7 @@ wforge list-models [OPTIONS]
 
 wforge convert [OPTIONS]
       --model-id <ID>              HuggingFace model ID [default: openai/whisper-tiny.en]
-      --output <PATH>              Output path without extension (required)
+      --output <PATH>              Output model directory (required); gets model.{mpk,cfg} + tokenizer.json
       --local-safetensors <PATH>   Load from local safetensors file instead of downloading
       --quantize <MODE>            none | int8 [default: none]
 

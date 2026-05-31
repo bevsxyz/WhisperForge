@@ -16,7 +16,9 @@ use whisperforge_core::{
 };
 use whisperforge_diarize::SpeakerDiarizer;
 
-use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
+use super::list_models::{
+    MODELS_DIR_ENV, model_base_path, model_tokenizer_path, resolve_models_dir,
+};
 use crate::device::{DeviceChoice, ResolvedDevice, resolve};
 
 /// CLI surface for the Whisper decode task. `Translate` is X → English only —
@@ -269,7 +271,7 @@ fn run_backend<B: Backend>(
     )?;
     println!("Model loaded successfully!");
 
-    let tokenizer_path = models_dir.join("tokenizer.json");
+    let tokenizer_path = model_tokenizer_path(&models_dir, &args.model);
     println!("Loading tokenizer from: {}", tokenizer_path.display());
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;

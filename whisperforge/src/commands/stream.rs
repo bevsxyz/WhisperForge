@@ -18,7 +18,9 @@ use whisperforge_core::{
     stream_decode::DecodeContext, task_token_id,
 };
 
-use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
+use super::list_models::{
+    MODELS_DIR_ENV, model_base_path, model_tokenizer_path, resolve_models_dir,
+};
 use super::transcribe::TaskArg;
 use crate::device::{DeviceChoice, ResolvedDevice, resolve};
 use crate::stream_ui::{FileTranscriptSink, JsonSink, MultiSink, StreamSink, TerminalSink};
@@ -200,7 +202,7 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
     let model: Whisper<B> =
         whisperforge_core::load::load_whisper(base.to_str().context("invalid path")?, &device)?;
 
-    let tokenizer_path = models_dir.join("tokenizer.json");
+    let tokenizer_path = model_tokenizer_path(&models_dir, model_name);
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
 

@@ -422,19 +422,13 @@ mod tests {
             .parent()
             .expect("workspace root")
             .join("models");
-        let model_path = models_dir.join("tiny_en_converted");
+        // Per-model layout: `<name>/model.{mpk,cfg}` + `<name>/tokenizer.json`.
+        let model_dir = models_dir.join("tiny_en_converted");
+        let model_path = model_dir.join("model");
         let model_path_str = model_path.to_str().expect("valid UTF-8 model path");
 
         let model = load_whisper::<Flex<f32>>(model_path_str, &device)?;
-        let tokenizer_path = model_path.with_extension("").join("tokenizer.json");
-        let tokenizer_path = if tokenizer_path.exists() {
-            tokenizer_path
-        } else {
-            // Some model directories store tokenizer.json next to the .mpk file.
-            models_dir
-                .join("tiny_en_converted")
-                .with_file_name("tokenizer.json")
-        };
+        let tokenizer_path = model_dir.join("tokenizer.json");
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
 

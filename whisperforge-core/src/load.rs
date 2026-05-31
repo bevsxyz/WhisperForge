@@ -249,8 +249,8 @@ mod tests {
         use burn_flex::Flex;
         use burn_flex::FlexDevice;
 
-        // Use converted model (Burn 0.20 format)
-        let model_path = models_dir().join("tiny_en_converted");
+        // Per-model layout: weights/config live at `<name>/model.{mpk,cfg}`.
+        let model_path = models_dir().join("tiny_en_converted").join("model");
         if !model_path.with_extension("mpk").exists() {
             eprintln!("Skipping test: model files not found at {:?}", model_path);
             eprintln!(
@@ -287,7 +287,7 @@ mod tests {
         use burn_flex::Flex;
         use burn_flex::FlexDevice;
 
-        let model_path = models_dir().join("base_converted");
+        let model_path = models_dir().join("base_converted").join("model");
         if !model_path.with_extension("mpk").exists() {
             eprintln!(
                 "Skipping: {:?}.mpk not found. Convert from HuggingFace first.",
@@ -320,7 +320,7 @@ mod tests {
         use burn_flex::Flex;
         use burn_flex::FlexDevice;
 
-        let model_path = models_dir().join("small_converted");
+        let model_path = models_dir().join("small_converted").join("model");
         if !model_path.with_extension("mpk").exists() {
             eprintln!(
                 "Skipping: {:?}.mpk not found. Convert from HuggingFace first.",

@@ -47,7 +47,8 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 }
 
 fn run_bench<B: Backend>(audio: &Path, models_dir: &Path, device: B::Device) -> Result<()> {
-    let base = models_dir.join("tiny_en_converted");
+    let model_dir = models_dir.join("tiny_en_converted");
+    let base = model_dir.join("model");
     let mpk = base.with_extension("mpk");
     if !mpk.exists() {
         anyhow::bail!(
@@ -60,7 +61,7 @@ fn run_bench<B: Backend>(audio: &Path, models_dir: &Path, device: B::Device) -> 
     let model: Whisper<B> =
         whisperforge_core::load::load_whisper(base.to_str().context("invalid path")?, &device)?;
 
-    let tokenizer_path = models_dir.join("tokenizer.json");
+    let tokenizer_path = model_dir.join("tokenizer.json");
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
 

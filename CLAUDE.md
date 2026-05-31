@@ -77,7 +77,7 @@ ci: disable wgpu on windows
 
 The `commit-msg` hook validates this; non-conforming commits are blocked. `git-cliff` auto-generates CHANGELOG from commits using this format.
 
-Model files (`.mpk`, `.cfg`, tokenizer) are git-ignored. Download from HuggingFace and convert with `wforge convert`.
+Model files are git-ignored. Download from HuggingFace and convert with `wforge convert`. Each converted model is a **self-contained directory** `models/<name>/` holding `model.mpk`, `model.cfg`, and its own `tokenizer.json` (per-model, not shared — a `.en` and a multilingual tokenizer differ, and a shared one silently mismatches the loaded weights). `load_whisper` takes the `models/<name>/model` stem; `list-models` scans subdirs for `model.mpk`. Path helpers live in [list_models.rs](whisperforge/src/commands/list_models.rs): `model_base_path`, `model_tokenizer_path`, `model_dir_path`.
 
 ## Architecture
 

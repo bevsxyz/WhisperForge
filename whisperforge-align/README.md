@@ -22,7 +22,7 @@ use whisperforge_align::BatchedTranscriber;
 use whisperforge_core::{Model, WhisperConfig};
 
 let config = WhisperConfig::tiny_en();
-let model = Model::load(Path::new("models/tiny_en_converted"))?;
+let model = Model::load(Path::new("models/tiny_en_converted/model"))?;
 let mut transcriber = BatchedTranscriber::new(model)?;
 
 let segments = transcriber.transcribe_file("audio.wav")?;

@@ -22,7 +22,7 @@
 
 .PREREQUISITES
     Build with all backends:  cargo build --release -p whisperforge --features cuda
-    Models present:           models/tiny_en_converted.{mpk,cfg}, models/tokenizer.json
+    Models present:           models/tiny_en_converted/model.{mpk,cfg}, models/tiny_en_converted/tokenizer.json
     Audio fixture:            test_data/LJ001-0001_16k.wav
 
 .EXAMPLE
