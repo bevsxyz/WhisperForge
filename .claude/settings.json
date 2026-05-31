@@ -29,10 +29,6 @@
           {
             "type": "command",
             "command": "[ -f CODEINDEX.md ] && cat CODEINDEX.md | jq -Rs '{hookSpecificOutput: {hookEventName: \"SessionStart\", additionalContext: .}}' || echo '{}'"
-          },
-          {
-            "type": "command",
-            "command": "eval \"$(mise activate bash 2>/dev/null)\" && echo '{\"systemMessage\": \"Mise environment loaded\"}' || echo '{\"systemMessage\": \"Mise not available\"}'"
           }
         ]
       }
@@ -44,15 +40,6 @@
           {
             "type": "command",
             "command": "BLOCKED=$(python3 -c \"import sys,json; d=json.load(sys.stdin); print('yes' if str(d.get('file_path','')).endswith('model.rs') else 'no')\" 2>/dev/null); [ \"$BLOCKED\" = \"yes\" ] && { echo 'BLOCKED: model.rs is FROZEN per CLAUDE.md -- do not modify the Burn 0.20 architecture.' >&2; exit 2; }; exit 0"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "jq '.tool_input.command |= \"eval \\\"$(mise activate bash 2>/dev/null)\\\" && \" + . | {hookSpecificOutput: {hookEventName: \"PreToolUse\", updatedInput: .tool_input}}'"
           }
         ]
       }
