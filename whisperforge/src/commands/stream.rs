@@ -12,9 +12,10 @@ use clap::Parser;
 use tokenizers::Tokenizer;
 use whisperforge_core::{
     CaptureSource, Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, FakeMic,
-    MicCapture, PromptContext, SileroVad, Whisper, WindowConfig, avg_logprob,
+    MicCapture, PromptContext, QualityGate, SileroVad, Whisper, WindowConfig, avg_logprob,
     compute_mel_from_samples, decode_window, ensure_silero_model,
-    list_input_devices as core_list_input_devices, stream_decode::DecodeContext,
+    list_input_devices as core_list_input_devices, passes_quality_gate,
+    stream_decode::DecodeContext,
 };
 
 use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
@@ -78,6 +79,19 @@ pub struct StreamArgs {
     /// e.g. `--prompt-tokens 60` if you need topical continuity across utterances.
     #[arg(long, default_value = "0")]
     pub prompt_tokens: usize,
+
+    /// Reject a decoded window whose average token log-probability falls below this
+    /// (default -1.0, matching faster-whisper's `log_prob_threshold`). Low-confidence
+    /// windows are dropped before the committer sees them. Lower (more negative) keeps
+    /// more output; raise toward 0 to be stricter.
+    #[arg(long, default_value = "-1.0")]
+    pub logprob_threshold: f32,
+
+    /// Reject a decoded window whose gzip compression ratio exceeds this (default 2.4,
+    /// matching faster-whisper's `compression_ratio_threshold`). High ratios signal a
+    /// repetition/hallucination loop (the `*sigh* *sigh*` failure mode).
+    #[arg(long, default_value = "2.4")]
+    pub compression_ratio_threshold: f32,
 
     /// Output streaming results as NDJSON to stdout
     #[arg(long)]
@@ -201,6 +215,10 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
         min_utterance_secs: 0.5,
     });
     let mut prompt_ctx = PromptContext::new(args.prompt_tokens, prevtext_token_id);
+    let quality_gate = QualityGate {
+        log_prob_threshold: args.logprob_threshold,
+        compression_ratio_threshold: args.compression_ratio_threshold,
+    };
 
     let source = if let Some(ref path) = args.from_file {
         eprintln!("Reading from file: {}", path.display());
@@ -420,6 +438,17 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
             content_logprobs.len(),
             window.cap_hit,
         )?;
+
+        // Confidence gate (faster-whisper parity): drop low-confidence or repetition-loop
+        // windows before the committer sees them. LocalAgreement-2 only rejects *unstable*
+        // output, so a confident hallucination loop would otherwise commit. Dropping reduces
+        // the window to an empty ingest — already a normal per-frame occurrence on silence.
+        let emits = if !emits.is_empty() && !passes_quality_gate(&emits, &quality_gate) {
+            tracing::debug!(window_avg_lp, "window rejected by quality gate");
+            Vec::new()
+        } else {
+            emits
+        };
 
         let (commit_delta, tentative_delta) = committer.ingest(emits);
 

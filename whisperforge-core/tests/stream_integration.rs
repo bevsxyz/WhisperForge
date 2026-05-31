@@ -20,9 +20,9 @@ use std::thread;
 use std::time::Duration;
 use tokenizers::Tokenizer;
 use whisperforge_core::{
-    Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, FakeMic, PromptContext, SileroVad,
-    Whisper, WindowConfig, compute_mel_from_samples, decode_window, ensure_silero_model,
-    stream_decode::DecodeContext,
+    Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, FakeMic, PromptContext,
+    QualityGate, SileroVad, Whisper, WindowConfig, compute_mel_from_samples, decode_window,
+    ensure_silero_model, passes_quality_gate, stream_decode::DecodeContext,
 };
 
 type B = Flex<f32>;
@@ -147,6 +147,13 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
             decode_window::<B>(&model, encoder_out, &ctx, &tokenizer, &device)?
         } else {
             vec![]
+        };
+
+        // Same confidence gate as the live stream main loop (faster-whisper defaults).
+        let emits = if !emits.is_empty() && !passes_quality_gate(&emits, &QualityGate::default()) {
+            Vec::new()
+        } else {
+            emits
         };
 
         let (commit_delta, _tentative) = committer.ingest(emits);
@@ -338,6 +345,13 @@ fn test_stream_pipeline_long_form_trim() -> Result<()> {
             decode_window::<B>(&model, encoder_out, &ctx, &tokenizer, &device)?
         } else {
             vec![]
+        };
+
+        // Same confidence gate as the live stream main loop (faster-whisper defaults).
+        let emits = if !emits.is_empty() && !passes_quality_gate(&emits, &QualityGate::default()) {
+            Vec::new()
+        } else {
+            emits
         };
 
         let (commit_delta, _tentative) = committer.ingest(emits);
