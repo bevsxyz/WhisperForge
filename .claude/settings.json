@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.command' | { read -r cmd; eval \"$(mise activate bash 2>/dev/null)\" >/dev/null 2>&1; echo \"{\\\"hookSpecificOutput\\\": {\\\"hookEventName\\\": \\\"PreToolUse\\\", \\\"updatedInput\\\": {\\\"command\\\": \\\"eval \\\\\\\"\\\\$(mise activate bash 2>/dev/null)\\\\\\\" && $cmd\\\"}}}\" || echo '{}'; }"
+            "command": "jq '.tool_input.command |= \"eval \\\"$(mise activate bash 2>/dev/null)\\\" && \" + . | {hookSpecificOutput: {hookEventName: \"PreToolUse\", updatedInput: .tool_input}}'"
           }
         ]
       }
