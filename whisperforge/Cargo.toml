@@ -28,12 +28,17 @@ whisperforge-core = { path = "../whisperforge-core", version = "0.4" }
 whisperforge-align = { path = "../whisperforge-align", version = "0.4" }
 whisperforge-diarize = { path = "../whisperforge-diarize", version = "0.4" }
 clap = { workspace = true, features = ["derive", "env"] }
+clap_complete = "4.4"
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokenizers = { workspace = true }
 cpal = { workspace = true }
 ringbuf = { workspace = true }
+# Platform-standard cache/data dirs for the default models location.
+directories = "6"
+# Interactive model picker (TTY fallback when no model is given).
+dialoguer = { version = "0.11", default-features = false }
 ort = { workspace = true }
 crossterm = { workspace = true }
 tracing = { workspace = true }

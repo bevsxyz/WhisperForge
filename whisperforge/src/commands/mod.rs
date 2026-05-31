@@ -1,4 +1,4 @@
-pub mod convert;
-pub mod list_models;
+pub mod list;
+pub mod pull;
 pub mod stream;
 pub mod transcribe;
