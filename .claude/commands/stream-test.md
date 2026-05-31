@@ -2,7 +2,7 @@ Run the stream subcommand against the LJSpeech test clip in offline mode and pri
 
 ```bash
 cargo run --release -p whisperforge -- stream \
-  --model tiny_en_converted \
+  --model tiny.en \
   --from-file test_data/LJ001-0001_16k.wav \
   --no-realtime --json
 ```

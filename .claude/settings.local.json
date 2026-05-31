@@ -3,7 +3,8 @@
     "allow": [
       "Bash(gh run *)",
       "WebSearch",
-      "Bash(./target/release/wforge stream *)"
+      "Bash(./target/release/wforge stream *)",
+      "Bash(timeout 540 target/release/wforge stream --model tiny.en --from-file test_data/LJ001-0001_16k.wav --no-realtime --json)"
     ]
   }
 }

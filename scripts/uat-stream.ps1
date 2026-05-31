@@ -22,7 +22,7 @@
 
 .PREREQUISITES
     Build with all backends:  cargo build --release -p whisperforge --features cuda
-    Models present:           models/tiny_en_converted/model.{mpk,cfg}, models/tiny_en_converted/tokenizer.json
+    Models present:           wforge pull tiny.en  (models/tiny.en/model.{mpk,cfg} + tokenizer.json)
     Audio fixture:            test_data/LJ001-0001_16k.wav
 
 .EXAMPLE
@@ -32,7 +32,7 @@
 [CmdletBinding()]
 param(
     [string]   $Binary      = ".\target\release\wforge.exe",
-    [string]   $Model       = "tiny_en_converted",
+    [string]   $Model       = "tiny.en",
     [string]   $Wav         = ".\test_data\LJ001-0001_16k.wav",
     [string[]] $Devices     = @("cpu", "cuda", "wgpu"),
     [int]      $MinKeywords = 10,

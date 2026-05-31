@@ -23,21 +23,22 @@ mise run setup
 # Release (bumps version, generates CHANGELOG via git-cliff, tags, pushes)
 cargo release patch   # or minor / major
 
-# Run the CLI (transcribe is a subcommand post-Phase E merger)
-cargo run --release -p whisperforge -- transcribe -a audio.wav -m tiny_en_converted
+# Run the CLI (audio is a positional arg; -m omitted → picker on a TTY / `tiny.en`)
+cargo run --release -p whisperforge -- transcribe audio.wav -m tiny.en
 
-# Convert a HuggingFace Whisper model to Burn format
-cargo run --release -p whisperforge -- convert --model-id openai/whisper-tiny.en --output models/tiny_en_converted
+# Pull a Whisper model: friendly alias → openai/whisper-<alias>, auto-named dir
+cargo run --release -p whisperforge -- pull tiny.en
+# (also accepts a raw HF id `org/model` or a local .safetensors path / dir)
 
-# List converted models under ./models (override with --models-dir or WF_MODELS_DIR)
-cargo run --release -p whisperforge -- list-models
+# List models, audio devices, or compute backends (bare `list` shows all three)
+cargo run --release -p whisperforge -- list models
 
-# Stream realtime transcription from microphone
-cargo run --release -p whisperforge -- stream --model tiny_en_converted
+# Stream realtime transcription from microphone (presets: conversation | dictation)
+cargo run --release -p whisperforge -- stream --model tiny.en
 
 # Stream from file (synthetic mic, offline speed, JSON output).
 # --from-file requires a 16 kHz mono WAV (FakeMic does not resample).
-cargo run --release -p whisperforge -- stream --model tiny_en_converted \
+cargo run --release -p whisperforge -- stream --model tiny.en \
   --from-file test_data/LJ001-0001_16k.wav \
   --no-realtime --json
 
@@ -48,10 +49,10 @@ cargo run --release -p whisperforge --bin stream_bench -- \
 
 # Build with native CUDA (requires CUDA toolkit + nvcc on host)
 cargo build --release -p whisperforge --features cuda
-wforge transcribe -a audio.wav -m tiny_en_converted --device cuda
+wforge transcribe audio.wav -m tiny.en --device cuda
 ```
 
-`wforge transcribe` and `wforge list-models` honor `WF_MODELS_DIR` (default `./models/`). `--models-dir <PATH>` on either subcommand overrides the env var.
+`--models-dir` is a global flag (honors `WF_MODELS_DIR`); it resolves in order: flag → env → `./models/` if present in cwd → platform cache dir (`~/.cache/whisperforge/models` on Linux). The cache dir is separate from hf-hub's own download cache.
 
 `wforge transcribe --device <auto|cpu|wgpu|cuda>` picks the backend at runtime. `auto` prefers CUDA (when built with `--features cuda`), then WGPU (when built with the default `gpu` feature), then CPU.
 
@@ -77,7 +78,7 @@ ci: disable wgpu on windows
 
 The `commit-msg` hook validates this; non-conforming commits are blocked. `git-cliff` auto-generates CHANGELOG from commits using this format.
 
-Model files are git-ignored. Download from HuggingFace and convert with `wforge convert`. Each converted model is a **self-contained directory** `models/<name>/` holding `model.mpk`, `model.cfg`, and its own `tokenizer.json` (per-model, not shared — a `.en` and a multilingual tokenizer differ, and a shared one silently mismatches the loaded weights). `load_whisper` takes the `models/<name>/model` stem; `list-models` scans subdirs for `model.mpk`. Path helpers live in [list_models.rs](whisperforge/src/commands/list_models.rs): `model_base_path`, `model_tokenizer_path`, `model_dir_path`.
+Model files are git-ignored. Download/convert with `wforge pull <alias|hf-id|local-path>`. Each converted model is a **self-contained directory** `<models-dir>/<name>/` holding `model.mpk`, `model.cfg`, and its own `tokenizer.json` (per-model, not shared — a `.en` and a multilingual tokenizer differ, and a shared one silently mismatches the loaded weights). `load_whisper` takes the `<name>/model` stem; `list models` scans subdirs for `model.mpk`. Path helpers + `scan_models` live in [list.rs](whisperforge/src/commands/list.rs): `model_base_path`, `model_tokenizer_path`, `model_dir_path`, `resolve_models_dir`.
 
 ## Architecture
 
@@ -86,7 +87,7 @@ Four-crate Rust workspace using [Burn 0.21](https://burn.dev/) for GPU-accelerat
 | Crate | Role |
 |-------|------|
 | `whisperforge-core` | Whisper model + decoding — primary development area |
-| `whisperforge` | `wforge` binary; hosts `wforge transcribe` and `wforge convert` subcommands (post-Phase E merger) |
+| `whisperforge` | `wforge` binary; hosts `transcribe`, `pull`, `list`, `stream` subcommands |
 | `whisperforge-align` | VAD, segmentation, SRT output (has known test failures; work cautiously) |
 | `whisperforge-diarize` | Speaker diarization (Option A shipped; Option B deferred) |
 
@@ -144,7 +145,7 @@ Key files in `whisperforge-core/src/`:
 
 ## Roadmap
 
-Phases 1–7 + A–B + B.5 + C + E + F complete. Phase D (WASM) deferred.
+Phases 1–7 + A–B + B.5 + C + E + F + G complete. Phase D (WASM) deferred.
 
 ### Phase B.5 — CubeCL Mel Pipeline ✅ COMPLETE
 
@@ -156,8 +157,8 @@ Phases 1–7 + A–B + B.5 + C + E + F complete. Phase D (WASM) deferred.
 
 ### Phase C — Quantization ✅ COMPLETE
 
-INT8 post-training quantization (~4× size reduction: 150 MB → 37 MB). Lives in `whisperforge::commands::convert` post-Phase E merger.
-- `--quantize int8` flag on `wforge convert` (uses `Module::quantize_weights`)
+INT8 post-training quantization (~4× size reduction: 150 MB → 37 MB). Lives in `whisperforge::commands::pull` (the conversion core, formerly `convert`).
+- `--quantize int8` flag on `wforge pull` (uses `Module::quantize_weights`)
 - `Precision` enum (Fp32/Int8) in convert pipeline; metadata recorded in `.cfg` sidecar
 - Load path unchanged — recorder transparently handles quantized DType
 - **Known limitation — INT8 is disk-format-only on every backend in Burn 0.21**: the `load.rs::load_whisper_from_bytes` fallback (load on `Flex<f32>` CPU, run `Dequantizer` mapper, re-serialize to FP32, then load on the target) is **unconditional** for any `.cfg` reporting `precision: int8`. Reasoning per backend: NdArray CPU has a quantized-*conversion* unwrap panic; WGPU/WGSL has no i8 element type; **CUDA looks viable on paper — `supports_dtype(QFloat) == true` and `q_matmul` is wired — but `burn-cubecl 0.21` leaves `q_slice`, `q_gather`, `q_select`, and `q_expand` as `unimplemented!()`, so Whisper's first slice (encoder windowing / KV cache) panics mid-forward**. We tried the obvious gate (`b50d0b8`, reverted in `76db690`) — `supports_dtype` is *not* a reliable proxy for "can run quantized inference end-to-end". Until Burn lands the missing q-ops, INT8 stays a 4× on-disk saving and inference runs FP32; the 38 MB file expands to ~150 MB in RAM. Don't re-enable the gate without first checking `~/.cargo/registry/src/.../burn-cubecl-*/src/ops/qtensor.rs` for those `unimplemented!()` lines.
@@ -206,6 +207,18 @@ The trim point is intentionally NOT anchored to Whisper's timestamp tokens. The 
 **Known content gaps at the trim seam.** Even with force-commit, ~30% of mid-utterance content is dropped at trim boundaries — Whisper's non-causal encoder produces different tokens for the same audio across different buffer sizes, so LCP doesn't reliably confirm tokens that span a trim. The current implementation prefers structural continuity (one endpoint event per utterance, no duplicated text) over content fidelity. **This gap is accepted, not a bug:** the happy path (dictation/conversation with natural pauses) resets cleanly per-utterance and never hits a cap, so it's unaffected. For *continuous multi-minute monologue with no pauses*, the **supported path is `--max-window-secs 28`** (no cap-hits on most utterances → no trim seams). Truly fixing the trim-seam case requires temperature-fallback sampling + working timestamps + timestamp-anchored trimming — a deferred follow-up, not on the current roadmap.
 
 A **sliding-buffer** alternative (drop oldest `stride_secs` per stride) was prototyped much earlier and reverted because the encoder-output mismatch across buffer sizes produced duplicated text at every slide seam. The current cap-hit-only trim is dramatically less frequent (one trim per ~1.5 s of new audio vs. one slide per `stride_secs`) so the duplication cost is amortized and `Committer::on_trim`'s clearing of `last_candidate` prevents direct re-derivation of force-committed tokens.
+
+### Phase G — CLI UX redesign ✅ COMPLETE (0.5.0, breaking)
+
+Smaller, more discoverable surface. **Breaking** — supersedes the Phase E command names.
+
+- `convert` → **`pull <MODEL>`**: polymorphic positional (friendly alias → `openai/whisper-<alias>`, raw HF id, or local `.safetensors` path/dir for fine-tuned models); auto-named dir, `--name` to override. `convert` kept as a hidden clap alias for one release. Conversion core in [pull.rs](whisperforge/src/commands/pull.rs) is unchanged from the old `convert.rs`.
+- `list-models` + `stream --list-input-devices` → unified **`list [models|devices|backends]`** (default `all`) in [list.rs](whisperforge/src/commands/list.rs). `backends` reports compiled features + what `--device auto` resolves to.
+- `transcribe`: audio is now a **positional** `<AUDIO>`; `--output-format`→`-f/--format`, `--decoding-preset`→`--preset` (both ValueEnums); `--vad-enabled`→`--vad`; advanced flags grouped under clap `help_heading`s; `--debug-inference` hidden.
+- `stream`: **`--preset conversation|dictation`** bundles window/endpointing defaults (conversation = 5 s cap; dictation = 28 s cap); individual flags override. Flags grouped under help headings.
+- **`--models-dir` is now a global flag** (env `WF_MODELS_DIR`). Default resolution: flag → env → `./models/` if present → platform cache dir (`directories::ProjectDirs::cache_dir()/models`, e.g. `~/.cache/whisperforge/models`). Separate from hf-hub's download cache.
+- **Interactive model picker** ([interactive.rs](whisperforge/src/interactive.rs)): when `-m` is omitted/not-found on a TTY (`std::io::IsTerminal`), `dialoguer::Select` over `scan_models`; non-TTY → error pointing at `wforge list models` / `wforge pull`. Default model name is now `tiny.en` (was `tiny_en_converted`).
+- **Follow-ups (same release):** `transcribe -f vtt` (WebVTT, alongside srt/json — all carry per-segment timestamps); `list --json` (machine-readable models/devices/backends); `wforge completions <shell>` (clap_complete); `pull` shows an hf-hub download progress bar (`ApiBuilder::with_progress(true)`).
 
 ## Code conventions
 
