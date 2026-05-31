@@ -32,7 +32,7 @@
           },
           {
             "type": "command",
-            "command": "eval \"$(mise eval bash 2>/dev/null)\" && echo '{\"systemMessage\": \"Mise environment loaded\"}' || echo '{\"systemMessage\": \"Mise not available\"}'"
+            "command": "eval \"$(mise activate bash 2>/dev/null)\" && echo '{\"systemMessage\": \"Mise environment loaded\"}' || echo '{\"systemMessage\": \"Mise not available\"}'"
           }
         ]
       }
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.command' | { read -r cmd; eval \"$(mise eval bash 2>/dev/null)\" >/dev/null 2>&1; echo \"{\\\"hookSpecificOutput\\\": {\\\"hookEventName\\\": \\\"PreToolUse\\\", \\\"updatedInput\\\": {\\\"command\\\": \\\"eval \\\\\\\"\\\\$(mise eval bash 2>/dev/null)\\\\\\\" && $cmd\\\"}}}\" || echo '{}'; }"
+            "command": "jq -r '.tool_input.command' | { read -r cmd; eval \"$(mise activate bash 2>/dev/null)\" >/dev/null 2>&1; echo \"{\\\"hookSpecificOutput\\\": {\\\"hookEventName\\\": \\\"PreToolUse\\\", \\\"updatedInput\\\": {\\\"command\\\": \\\"eval \\\\\\\"\\\\$(mise activate bash 2>/dev/null)\\\\\\\" && $cmd\\\"}}}\" || echo '{}'; }"
           }
         ]
       }
