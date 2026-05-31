@@ -55,19 +55,26 @@ if (-not (Test-Path $Wav)) { throw "Audio fixture not found: $Wav" }
 function Invoke-Stream {
     param([string] $Device, [bool] $Realtime, [double] $Stride)
 
+    $outFile = [System.IO.Path]::GetTempFileName()
     $errFile = [System.IO.Path]::GetTempFileName()
     $cliArgs = @(
         "stream", "--model", $Model, "--from-file", $Wav,
-        "--json", "--device", $Device, "--stride-secs", $Stride
+        "--json", "--device", $Device, "--stride-secs", "$Stride"
     )
     if (-not $Realtime) { $cliArgs += "--no-realtime" }
 
-    $stdout = & $Binary @cliArgs 2> $errFile
-    $exit = $LASTEXITCODE
+    # Use Start-Process with redirected files: the binary writes progress lines
+    # ("Backend: Flex (CPU)", "Loading model…") to stderr, and under
+    # `$ErrorActionPreference = 'Stop'` the `&` call operator would otherwise wrap
+    # each native stderr line as a terminating RemoteException. Start-Process does not.
+    $proc = Start-Process -FilePath $Binary -ArgumentList $cliArgs `
+        -NoNewWindow -Wait -PassThru `
+        -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    $stdout = @(Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue)
     $stderr = (Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
-    Remove-Item -LiteralPath $errFile -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $outFile, $errFile -ErrorAction SilentlyContinue
 
-    [pscustomobject]@{ Stdout = $stdout; Stderr = $stderr; Exit = $exit }
+    [pscustomobject]@{ Stdout = $stdout; Stderr = $stderr; Exit = $proc.ExitCode }
 }
 
 function Get-Transcript {
