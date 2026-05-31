@@ -211,6 +211,18 @@ fn log_softmax_at(logits: &[f32], token: u32) -> f32 {
     logits[idx] - log_sum
 }
 
+pub fn avg_logprob(tokens: &[TokenEmit]) -> f32 {
+    let content: Vec<f32> = tokens
+        .iter()
+        .filter(|t| !t.is_special)
+        .map(|t| t.logprob)
+        .collect();
+    if content.is_empty() {
+        return 0.0;
+    }
+    content.iter().sum::<f32>() / content.len() as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -30,7 +30,7 @@ pub use embed::extract_speaker_embedding;
 pub use kv_cache::{KvCache, forward_decoder_cached};
 pub use load::{load_config_from_bytes, load_whisper_from_bytes};
 pub use model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
-pub use stream_decode::{DecodeContext, TokenEmit, decode_window};
+pub use stream_decode::{DecodeContext, TokenEmit, avg_logprob, decode_window};
 pub use streaming::{
     Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, PromptContext, StreamWindow,
     WindowConfig,

@@ -12,9 +12,9 @@ use clap::Parser;
 use tokenizers::Tokenizer;
 use whisperforge_core::{
     CaptureSource, Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, FakeMic,
-    MicCapture, PromptContext, SileroVad, Whisper, WindowConfig, compute_mel_from_samples,
-    decode_window, ensure_silero_model, list_input_devices as core_list_input_devices,
-    stream_decode::DecodeContext,
+    MicCapture, PromptContext, SileroVad, Whisper, WindowConfig, avg_logprob,
+    compute_mel_from_samples, decode_window, ensure_silero_model,
+    list_input_devices as core_list_input_devices, stream_decode::DecodeContext,
 };
 
 use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
@@ -388,6 +388,38 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
         } else {
             Vec::new()
         };
+
+        let content_logprobs: Vec<f32> = emits
+            .iter()
+            .filter(|t| !t.is_special)
+            .map(|t| t.logprob)
+            .collect();
+        let (window_avg_lp, window_min_lp) = if content_logprobs.is_empty() {
+            (f32::NAN, f32::NAN)
+        } else {
+            (
+                avg_logprob(&emits),
+                content_logprobs
+                    .iter()
+                    .cloned()
+                    .fold(f32::INFINITY, f32::min),
+            )
+        };
+        tracing::debug!(
+            n_tokens = emits.len(),
+            n_content = content_logprobs.len(),
+            window_avg_lp,
+            window_min_lp,
+            cap_hit = window.cap_hit,
+            had_speech = window.had_speech,
+            "window decode metrics"
+        );
+        sink.on_decode_metrics(
+            window_avg_lp,
+            window_min_lp,
+            content_logprobs.len(),
+            window.cap_hit,
+        )?;
 
         let (commit_delta, tentative_delta) = committer.ingest(emits);
 
