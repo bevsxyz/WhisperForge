@@ -36,7 +36,12 @@ param(
     [string]   $Wav         = ".\test_data\LJ001-0001_16k.wav",
     [string[]] $Devices     = @("cpu", "cuda", "wgpu"),
     [int]      $MinKeywords = 10,
-    [double]   $StrideSecs  = 1.0
+    [double]   $StrideSecs  = 1.0,
+    # Accuracy pass uses a large window so a single continuous clip (LJ001-0001 is
+    # one ~12 s sentence with no pause) does NOT hit the 5 s cap and lose content at
+    # trim seams — this is the supported path for continuous monologue. The real-time
+    # keep-up pass deliberately stays at the live default (5 s) to test live latency.
+    [double]   $AccuracyMaxWindowSecs = 28.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,7 +58,7 @@ if (-not (Test-Path $Binary)) {
 if (-not (Test-Path $Wav)) { throw "Audio fixture not found: $Wav" }
 
 function Invoke-Stream {
-    param([string] $Device, [bool] $Realtime, [double] $Stride)
+    param([string] $Device, [bool] $Realtime, [double] $Stride, [double] $MaxWindow = 0.0)
 
     $outFile = [System.IO.Path]::GetTempFileName()
     $errFile = [System.IO.Path]::GetTempFileName()
@@ -61,6 +66,7 @@ function Invoke-Stream {
         "stream", "--model", $Model, "--from-file", $Wav,
         "--json", "--device", $Device, "--stride-secs", "$Stride"
     )
+    if ($MaxWindow -gt 0.0) { $cliArgs += @("--max-window-secs", "$MaxWindow") }
     if (-not $Realtime) { $cliArgs += "--no-realtime" }
 
     # Use Start-Process with redirected files: the binary writes progress lines
@@ -95,9 +101,9 @@ $results = @()
 foreach ($dev in $Devices) {
     Write-Host "`n=== Device: $dev ===" -ForegroundColor Cyan
 
-    # --- Pass 1: accuracy (offline) ---
-    Write-Host "  [1/2] accuracy (offline)..." -NoNewline
-    $acc = Invoke-Stream -Device $dev -Realtime $false -Stride $StrideSecs
+    # --- Pass 1: accuracy (offline, large window — no trim seams) ---
+    Write-Host "  [1/2] accuracy (offline, max-window=${AccuracyMaxWindowSecs}s)..." -NoNewline
+    $acc = Invoke-Stream -Device $dev -Realtime $false -Stride $StrideSecs -MaxWindow $AccuracyMaxWindowSecs
     if ($acc.Exit -ne 0) {
         Write-Host " ERROR (exit $($acc.Exit))" -ForegroundColor Red
         $snippet = ($acc.Stderr -split "`n" | Select-Object -Last 3) -join " | "
@@ -136,7 +142,7 @@ foreach ($dev in $Devices) {
     }
 }
 
-Write-Host "`n===== UAT MATRIX (stride=${StrideSecs}s, min keywords=${MinKeywords}) =====" -ForegroundColor Cyan
+Write-Host "`n===== UAT MATRIX (accuracy: max-window=${AccuracyMaxWindowSecs}s, min keywords=${MinKeywords}; real-time: live 5 s window, stride=${StrideSecs}s) =====" -ForegroundColor Cyan
 $results | Format-Table -AutoSize
 
 $failed = @($results | Where-Object { $_.Accuracy -ne "PASS" -or $_.RealTime -ne "PASS" })
