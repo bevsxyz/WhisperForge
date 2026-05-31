@@ -8,32 +8,66 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use burn::tensor::backend::Backend;
 use burn_flex::{Flex, FlexDevice};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use tokenizers::Tokenizer;
 use whisperforge_core::{
     CaptureSource, Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, FakeMic,
     MicCapture, PromptContext, QualityGate, SileroVad, Whisper, WindowConfig, avg_logprob,
     compute_mel_from_samples, decode_window, detect_language, ensure_silero_model,
-    language_token_id, list_input_devices as core_list_input_devices, passes_quality_gate,
-    stream_decode::DecodeContext, task_token_id,
+    language_token_id, passes_quality_gate, stream_decode::DecodeContext, task_token_id,
 };
 
-use super::list_models::{
-    MODELS_DIR_ENV, model_base_path, model_tokenizer_path, resolve_models_dir,
-};
+use super::list::{model_base_path, model_tokenizer_path, resolve_models_dir};
 use super::transcribe::TaskArg;
 use crate::device::{DeviceChoice, ResolvedDevice, resolve};
 use crate::stream_ui::{FileTranscriptSink, JsonSink, MultiSink, StreamSink, TerminalSink};
 
+/// Resolved window/endpointing timings (seconds): max window, stride, hard silence,
+/// post-punctuation silence.
+struct Timings {
+    max_window_secs: f32,
+    stride_secs: f32,
+    silence_secs: f32,
+    punct_silence_secs: f32,
+}
+
+/// Streaming regime presets. Each supplies window/endpointing defaults; any explicit
+/// flag still overrides the preset value.
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[clap(rename_all = "lowercase")]
+pub enum StreamPreset {
+    /// Short utterances, low latency (5 s window). Best for dialogue with natural pauses.
+    #[default]
+    Conversation,
+    /// Long continuous monologue (28 s window) — avoids mid-utterance trim seams.
+    Dictation,
+}
+
+impl StreamPreset {
+    /// The preset's baseline timings, used to fill any unset per-flag value.
+    fn defaults(self) -> Timings {
+        match self {
+            StreamPreset::Conversation => Timings {
+                max_window_secs: 5.0,
+                stride_secs: 1.0,
+                silence_secs: 2.0,
+                punct_silence_secs: 0.8,
+            },
+            StreamPreset::Dictation => Timings {
+                max_window_secs: 28.0,
+                stride_secs: 1.0,
+                silence_secs: 2.0,
+                punct_silence_secs: 0.8,
+            },
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 pub struct StreamArgs {
-    /// Model name to use for streaming transcription (required unless --list-input-devices)
+    /// Model name to use for streaming transcription
     #[arg(short, long)]
     pub model: Option<String>,
-
-    /// Directory to load model `.mpk`/`.cfg` files from. Defaults to `$WF_MODELS_DIR` or `./models/`.
-    #[arg(long, env = MODELS_DIR_ENV)]
-    pub models_dir: Option<PathBuf>,
 
     /// Backend selection: auto (default), cpu, wgpu, or cuda (feature-gated).
     #[arg(long, value_enum, default_value_t = DeviceChoice::Auto)]
@@ -55,100 +89,97 @@ pub struct StreamArgs {
     #[arg(long, value_enum, default_value_t = TaskArg::Transcribe)]
     pub task: TaskArg,
 
-    /// Optional input device name (default = system default)
+    /// Optional input device name (default = system default). See `wforge list devices`.
     #[arg(long)]
     pub input_device: Option<String>,
 
-    /// List available input devices and exit
-    #[arg(long)]
-    pub list_input_devices: bool,
+    /// Streaming regime preset (default conversation). `conversation` = short utterances,
+    /// low latency (5 s window); `dictation` = long continuous monologue (28 s window,
+    /// avoids mid-utterance trim seams). Individual window/endpointing flags override it.
+    #[arg(long, value_enum, default_value_t = StreamPreset::Conversation, help_heading = "Window & latency")]
+    pub preset: StreamPreset,
 
-    /// Hard cap on the growing decode buffer in seconds (default 5.0). When the buffer
+    /// Hard cap on the growing decode buffer in seconds (preset default). When the buffer
     /// hits this cap the chunker forces an EOU and the utterance splits into a new
     /// endpoint event; long utterances therefore transcribe as multiple consecutive
     /// endpoints rather than one continuous committed line. 5.0 s bounds per-window
     /// decode at ~25 tokens × ~100 ms/token ≈ 2.5 s on tiny.en CPU, comfortably under
     /// `--stride-secs`. Raise this only if your hardware sustains shorter per-window
     /// decode at larger windows (otherwise the cpal ring drops samples, logged to stderr).
-    #[arg(long, default_value = "5.0")]
-    pub max_window_secs: f32,
+    #[arg(long, help_heading = "Window & latency")]
+    pub max_window_secs: Option<f32>,
 
-    /// Stride (hop) size in seconds between windows (default 1.0). Each stride triggers a
-    /// full re-encode + re-decode of the growing buffer; with the 5 s default cap this
-    /// costs ~2.5 s worst-case on tiny.en + CPU, so 1.0 keeps committed-text latency low
-    /// while staying ahead of real-time. Raise to 2.0 if your hardware can't keep up.
-    #[arg(long, default_value = "1.0")]
-    pub stride_secs: f32,
+    /// Stride (hop) size in seconds between windows (preset default 1.0). Each stride
+    /// triggers a full re-encode + re-decode of the growing buffer; with the 5 s default
+    /// cap this costs ~2.5 s worst-case on tiny.en + CPU, so 1.0 keeps committed-text
+    /// latency low while staying ahead of real-time. Raise to 2.0 if your hardware can't keep up.
+    #[arg(long, help_heading = "Window & latency")]
+    pub stride_secs: Option<f32>,
 
     /// VAD detection threshold (0.0–1.0, default 0.5)
-    #[arg(long, default_value = "0.5")]
+    #[arg(long, default_value = "0.5", help_heading = "Endpointing")]
     pub vad_threshold: f32,
 
-    /// Hard end-of-utterance silence duration in seconds (default 2.0)
-    #[arg(long, default_value = "2.0")]
-    pub silence_secs: f32,
+    /// Hard end-of-utterance silence duration in seconds (preset default 2.0)
+    #[arg(long, help_heading = "Endpointing")]
+    pub silence_secs: Option<f32>,
 
-    /// Soft EOU (after punctuation) silence duration in seconds (default 0.8)
-    #[arg(long, default_value = "0.8")]
-    pub punct_silence_secs: f32,
+    /// Soft EOU (after punctuation) silence duration in seconds (preset default 0.8)
+    #[arg(long, help_heading = "Endpointing")]
+    pub punct_silence_secs: Option<f32>,
 
     /// Number of previously-committed tokens to feed as <|prevtext|> on each window
     /// (default 0 — disabled). Non-zero values can lock the decoder into hallucination
     /// loops on quiet audio (the model keeps repeating the last phrase). Re-enable with
     /// e.g. `--prompt-tokens 60` if you need topical continuity across utterances.
-    #[arg(long, default_value = "0")]
+    #[arg(long, default_value = "0", help_heading = "Endpointing")]
     pub prompt_tokens: usize,
 
     /// Reject a decoded window whose average token log-probability falls below this
     /// (default -1.0, matching faster-whisper's `log_prob_threshold`). Low-confidence
     /// windows are dropped before the committer sees them. Lower (more negative) keeps
     /// more output; raise toward 0 to be stricter.
-    #[arg(long, default_value = "-1.0")]
+    #[arg(long, default_value = "-1.0", help_heading = "Quality gate")]
     pub logprob_threshold: f32,
 
     /// Reject a decoded window whose gzip compression ratio exceeds this (default 2.4,
     /// matching faster-whisper's `compression_ratio_threshold`). High ratios signal a
     /// repetition/hallucination loop (the `*sigh* *sigh*` failure mode).
-    #[arg(long, default_value = "2.4")]
+    #[arg(long, default_value = "2.4", help_heading = "Quality gate")]
     pub compression_ratio_threshold: f32,
 
     /// Output streaming results as NDJSON to stdout
-    #[arg(long)]
+    #[arg(long, help_heading = "Output")]
     pub json: bool,
 
     /// Record input audio to a WAV file at the specified path
-    #[arg(long)]
+    #[arg(long, help_heading = "Output")]
     pub record_to: Option<PathBuf>,
 
     /// Append committed transcript lines to a file at the specified path
-    #[arg(long)]
+    #[arg(long, help_heading = "Output")]
     pub transcript_to: Option<PathBuf>,
 
     /// Disable ANSI color output
-    #[arg(long)]
+    #[arg(long, help_heading = "Output")]
     pub no_color: bool,
 
     /// Read audio from a WAV file instead of the microphone (16 kHz mono expected)
-    #[arg(long)]
+    #[arg(long, help_heading = "Input")]
     pub from_file: Option<PathBuf>,
 
     /// With --from-file: push samples as fast as possible (no real-time throttle)
-    #[arg(long)]
+    #[arg(long, help_heading = "Input")]
     pub no_realtime: bool,
 }
 
-pub fn run(args: StreamArgs) -> Result<()> {
-    if args.list_input_devices {
-        list_input_devices()?;
-        return Ok(());
-    }
-
+pub fn run(args: StreamArgs, models_dir: Option<PathBuf>) -> Result<()> {
     let resolved = resolve(args.device).context("Failed to resolve device")?;
 
     match resolved {
         ResolvedDevice::Cpu => {
             eprintln!("Backend: Flex (CPU)");
-            run_stream::<Flex<f32>>(args, FlexDevice)
+            run_stream::<Flex<f32>>(args, models_dir, FlexDevice)
         }
         #[cfg(feature = "gpu")]
         ResolvedDevice::Wgpu => {
@@ -158,13 +189,15 @@ pub fn run(args: StreamArgs) -> Result<()> {
             {
                 use burn_wgpu::CubeBackend;
                 eprintln!("Backend: WGPU (GPU, CubeCL STFT)");
-                run_stream::<CubeBackend<burn_wgpu::WgpuRuntime, f32, i32, u32>>(args, device)
+                run_stream::<CubeBackend<burn_wgpu::WgpuRuntime, f32, i32, u32>>(
+                    args, models_dir, device,
+                )
             }
             #[cfg(not(feature = "cubecl-stft"))]
             {
                 use burn::backend::Wgpu;
                 eprintln!("Backend: WGPU (GPU)");
-                run_stream::<Wgpu>(args, device)
+                run_stream::<Wgpu>(args, models_dir, device)
             }
         }
         #[cfg(feature = "cuda")]
@@ -172,12 +205,16 @@ pub fn run(args: StreamArgs) -> Result<()> {
             use burn_cuda::{Cuda, CudaDevice};
             type B = Cuda<f32, i32>;
             eprintln!("Backend: CUDA (CubeCL)");
-            run_stream::<B>(args, CudaDevice::default())
+            run_stream::<B>(args, models_dir, CudaDevice::default())
         }
     }
 }
 
-fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
+fn run_stream<B: Backend>(
+    args: StreamArgs,
+    models_dir: Option<PathBuf>,
+    device: B::Device,
+) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -187,22 +224,15 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
         .try_init()
         .ok();
 
-    let model_name = args.model.as_deref().context("--model is required")?;
-    let models_dir = resolve_models_dir(args.models_dir.as_deref());
-    let base = model_base_path(&models_dir, model_name);
-    let mpk_path = base.with_extension("mpk");
-    if !mpk_path.exists() {
-        anyhow::bail!(
-            "model '{model_name}' not found in {}. Run `wforge list-models` to see available models.",
-            models_dir.display(),
-        );
-    }
+    let models_dir = resolve_models_dir(models_dir.as_deref());
+    let model_name = crate::interactive::resolve_model(&models_dir, args.model.as_deref())?;
+    let base = model_base_path(&models_dir, &model_name);
 
     eprintln!("Loading model: {}", base.display());
     let model: Whisper<B> =
         whisperforge_core::load::load_whisper(base.to_str().context("invalid path")?, &device)?;
 
-    let tokenizer_path = model_tokenizer_path(&models_dir, model_name);
+    let tokenizer_path = model_tokenizer_path(&models_dir, &model_name);
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
 
@@ -223,8 +253,7 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
         language_token_id(&tokenizer, &args.language).with_context(|| {
             format!(
                 "model tokenizer has no <|{}|> token — you're likely using an English-only (.en) \
-                 model. Convert a multilingual model, e.g. `wforge convert --model-id \
-                 openai/whisper-small`.",
+                 model. Get a multilingual model, e.g. `wforge pull small`.",
                 args.language
             )
         })?
@@ -240,17 +269,28 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
     let vad_path = ensure_silero_model(&models_dir)?;
     let vad = SileroVad::open(&vad_path)?;
 
+    // Fill any unset window/endpointing flag from the chosen preset.
+    let defaults = args.preset.defaults();
+    let timings = Timings {
+        max_window_secs: args.max_window_secs.unwrap_or(defaults.max_window_secs),
+        stride_secs: args.stride_secs.unwrap_or(defaults.stride_secs),
+        silence_secs: args.silence_secs.unwrap_or(defaults.silence_secs),
+        punct_silence_secs: args
+            .punct_silence_secs
+            .unwrap_or(defaults.punct_silence_secs),
+    };
+
     let window_cfg = WindowConfig {
-        max_window_secs: args.max_window_secs,
-        stride_secs: args.stride_secs,
+        max_window_secs: timings.max_window_secs,
+        stride_secs: timings.stride_secs,
         vad_threshold: args.vad_threshold,
         min_speech_secs: 0.25,
     };
     let mut chunker = Chunker::new(window_cfg, vad);
     let mut committer = Committer::new();
     let mut endpointer = Endpointer::new(EndpointConfig {
-        silence_secs: args.silence_secs,
-        punct_silence_secs: args.punct_silence_secs,
+        silence_secs: timings.silence_secs,
+        punct_silence_secs: timings.punct_silence_secs,
         min_utterance_secs: 0.5,
     });
     let mut prompt_ctx = PromptContext::new(args.prompt_tokens, prevtext_token_id);
@@ -383,7 +423,7 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
             if source.is_file_done()
                 && utterance_committed.is_empty()
                 && !utterance_started
-                && silence_pushed_secs > args.silence_secs + 0.5
+                && silence_pushed_secs > timings.silence_secs + 0.5
             {
                 shutdown.store(true, Ordering::SeqCst);
                 continue;
@@ -604,18 +644,5 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
     }
     source.stop();
     sink.close()?;
-    Ok(())
-}
-
-fn list_input_devices() -> Result<()> {
-    let devices = core_list_input_devices()?;
-    let mut current_host: Option<&str> = None;
-    for (host, name) in &devices {
-        if current_host != Some(host.as_str()) {
-            println!("Host: {host}");
-            current_host = Some(host.as_str());
-        }
-        println!("  - {name}");
-    }
     Ok(())
 }
