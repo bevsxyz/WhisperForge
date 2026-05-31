@@ -1,10 +1,10 @@
-// Convert OpenAI Whisper safetensors to Burn .mpk format.
+// Download (or import) an OpenAI Whisper model and convert it to Burn .mpk format.
 //
-// Merged from the former `whisperforge-convert` crate. Exposes the
-// `wforge convert` subcommand plus the underlying conversion + inspection helpers.
+// Exposes the `wforge pull` subcommand (formerly `convert`) plus the underlying
+// conversion + inspection helpers. The conversion core below `run_async` is unchanged.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use burn::{
@@ -22,6 +22,8 @@ use safetensors::SafeTensors;
 use whisperforge_core::model::{AudioEncoder, TextDecoder};
 use whisperforge_core::{Whisper, WhisperConfig};
 
+use super::list::{MODEL_STEM, TOKENIZER_FILE, model_dir_path, resolve_models_dir};
+
 #[derive(ValueEnum, Clone, Copy, Default, Debug)]
 pub enum Quantize {
     #[default]
@@ -29,20 +31,35 @@ pub enum Quantize {
     Int8,
 }
 
+/// Friendly aliases recognised as `openai/whisper-<alias>`. Used only for `--help`
+/// and the suggestion printed on a failed download — `pull` does not hard-fail an
+/// unknown alias (community models on the Hub are fair game).
+const KNOWN_ALIASES: &[&str] = &[
+    "tiny",
+    "tiny.en",
+    "base",
+    "base.en",
+    "small",
+    "small.en",
+    "medium",
+    "medium.en",
+    "large-v1",
+    "large-v2",
+    "large-v3",
+    "large-v3-turbo",
+];
+
 #[derive(Parser, Debug)]
-pub struct ConvertArgs {
-    /// HuggingFace model ID (e.g., openai/whisper-tiny.en)
-    #[arg(long, default_value = "openai/whisper-tiny.en")]
-    pub model_id: String,
+pub struct PullArgs {
+    /// Model to fetch. One of: a friendly alias (`tiny.en`, `small`, `large-v3`), a raw
+    /// HuggingFace id (`openai/whisper-small`, `org/my-model`), or a local path to a
+    /// `.safetensors` file or a directory containing `model.safetensors` + `tokenizer.json`.
+    #[arg(value_name = "MODEL")]
+    pub model: String,
 
-    /// Output model directory (e.g., models/tiny_en_converted). The directory is
-    /// created and populated with `model.mpk`, `model.cfg`, and `tokenizer.json`.
+    /// Override the directory name the model is stored under (default: derived from MODEL).
     #[arg(long)]
-    pub output: String,
-
-    /// Use a local safetensors file instead of downloading
-    #[arg(long)]
-    pub local_safetensors: Option<String>,
+    pub name: Option<String>,
 
     /// Quantization mode
     #[arg(long, value_enum, default_value_t = Quantize::None)]
@@ -56,65 +73,149 @@ pub enum Precision {
     Int8,
 }
 
-type B = Flex<f32>;
-
-pub fn run(args: ConvertArgs) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
-    rt.block_on(run_async(args))
+/// Where a pulled model comes from, plus the directory name it is stored under.
+enum ModelSource {
+    /// Download `hf_id`'s `model.safetensors` + `tokenizer.json` from the Hub.
+    Hf { hf_id: String, dir_name: String },
+    /// Import an on-disk `safetensors` file (tokenizer.json looked up beside it).
+    Local {
+        safetensors: PathBuf,
+        dir_name: String,
+    },
 }
 
-async fn run_async(args: ConvertArgs) -> Result<()> {
-    let device = FlexDevice;
+impl ModelSource {
+    fn dir_name(&self) -> &str {
+        match self {
+            ModelSource::Hf { dir_name, .. } | ModelSource::Local { dir_name, .. } => dir_name,
+        }
+    }
+}
 
-    // `--output` names the per-model directory; weights/config/tokenizer all live inside it.
-    let model_dir = std::path::Path::new(&args.output);
-    std::fs::create_dir_all(model_dir).context("creating model output directory")?;
-
-    // Weights/config share a fixed `model` stem; the loader appends `.mpk`/`.cfg`.
-    let output_path = model_dir.join("model");
-    let tokenizer_dest = model_dir.join("tokenizer.json");
-
-    let safetensors_path = if let Some(local_path) = &args.local_safetensors {
-        let local_tokenizer = std::path::Path::new(local_path).with_file_name("tokenizer.json");
-        if local_tokenizer.exists() {
-            // Canonicalize to avoid copying a file onto itself when source == dest.
-            let src = local_tokenizer
-                .canonicalize()
-                .unwrap_or(local_tokenizer.clone());
-            let dst = tokenizer_dest
-                .canonicalize()
-                .unwrap_or(tokenizer_dest.clone());
-            if src != dst {
-                std::fs::copy(&local_tokenizer, &tokenizer_dest)
-                    .context("copying local tokenizer.json")?;
-                println!("Copied tokenizer to: {}", tokenizer_dest.display());
-            } else {
-                println!(
-                    "Tokenizer already at destination: {}",
-                    tokenizer_dest.display()
+/// Classify the polymorphic `MODEL` positional: existing path → local import; contains
+/// `/` → raw HF id; otherwise → `openai/whisper-<alias>`. `name` overrides the dir name.
+fn resolve_model_spec(arg: &str, name: Option<&str>) -> Result<ModelSource> {
+    let path = Path::new(arg);
+    if path.exists() {
+        let safetensors = if path.is_dir() {
+            let p = path.join("model.safetensors");
+            if !p.exists() {
+                anyhow::bail!(
+                    "no `model.safetensors` in directory '{}'. Point at the .safetensors file directly, or add one.",
+                    path.display()
                 );
             }
+            p
         } else {
-            println!("Warning: no tokenizer.json found next to local safetensors file");
-        }
-        std::path::PathBuf::from(local_path)
+            path.to_path_buf()
+        };
+        let dir_name = name
+            .map(String::from)
+            .unwrap_or_else(|| local_dir_name(path));
+        return Ok(ModelSource::Local {
+            safetensors,
+            dir_name,
+        });
+    }
+
+    if arg.contains('/') {
+        let derived = arg
+            .rsplit('/')
+            .next()
+            .unwrap_or(arg)
+            .trim_start_matches("whisper-")
+            .to_string();
+        let dir_name = name.map(String::from).unwrap_or(derived);
+        return Ok(ModelSource::Hf {
+            hf_id: arg.to_string(),
+            dir_name,
+        });
+    }
+
+    let dir_name = name.map(String::from).unwrap_or_else(|| arg.to_string());
+    Ok(ModelSource::Hf {
+        hf_id: format!("openai/whisper-{arg}"),
+        dir_name,
+    })
+}
+
+/// Derive a storage dir name from a local path: directory name, or file stem for a file.
+fn local_dir_name(path: &Path) -> String {
+    let raw = if path.is_dir() {
+        path.file_name()
     } else {
-        println!("Downloading from HuggingFace: {}", args.model_id);
-        let api = ApiBuilder::from_env()
-            .build()
-            .context("initialising HuggingFace API")?;
-        let repo = api.repo(Repo::new(args.model_id.clone(), RepoType::Model));
+        path.file_stem()
+    };
+    raw.and_then(|s| s.to_str())
+        .unwrap_or("local-model")
+        .to_string()
+}
 
-        let tok_cache = repo
-            .get("tokenizer.json")
-            .await
-            .context("downloading tokenizer.json")?;
-        std::fs::copy(&tok_cache, &tokenizer_dest).context("saving tokenizer.json")?;
-        println!("Saved tokenizer to: {}", tokenizer_dest.display());
+type B = Flex<f32>;
 
-        repo.get("model.safetensors")
-            .await
-            .context("downloading model.safetensors")?
+pub fn run(args: PullArgs, models_dir: Option<PathBuf>) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
+    rt.block_on(run_async(args, models_dir))
+}
+
+async fn run_async(args: PullArgs, models_dir: Option<PathBuf>) -> Result<()> {
+    let device = FlexDevice;
+
+    let source = resolve_model_spec(&args.model, args.name.as_deref())?;
+    let dir_name = source.dir_name().to_string();
+
+    // The model lives in its own per-model directory under the resolved models dir.
+    let base_dir = resolve_models_dir(models_dir.as_deref());
+    let model_dir = model_dir_path(&base_dir, &dir_name);
+    std::fs::create_dir_all(&model_dir).context("creating model output directory")?;
+
+    // Weights/config share a fixed `model` stem; the loader appends `.mpk`/`.cfg`.
+    let output_path = model_dir.join(MODEL_STEM);
+    let tokenizer_dest = model_dir.join(TOKENIZER_FILE);
+
+    let safetensors_path = match &source {
+        ModelSource::Local { safetensors, .. } => {
+            let local_tokenizer = safetensors.with_file_name(TOKENIZER_FILE);
+            if local_tokenizer.exists() {
+                // Canonicalize to avoid copying a file onto itself when source == dest.
+                let src = local_tokenizer
+                    .canonicalize()
+                    .unwrap_or_else(|_| local_tokenizer.clone());
+                let dst = tokenizer_dest
+                    .canonicalize()
+                    .unwrap_or_else(|_| tokenizer_dest.clone());
+                if src != dst {
+                    std::fs::copy(&local_tokenizer, &tokenizer_dest)
+                        .context("copying local tokenizer.json")?;
+                    println!("Copied tokenizer to: {}", tokenizer_dest.display());
+                }
+            } else {
+                println!(
+                    "Warning: no tokenizer.json found next to '{}'",
+                    safetensors.display()
+                );
+            }
+            safetensors.clone()
+        }
+        ModelSource::Hf { hf_id, .. } => {
+            println!("Downloading from HuggingFace: {hf_id}");
+            let api = ApiBuilder::from_env()
+                .with_progress(true)
+                .build()
+                .context("initialising HuggingFace API")?;
+            let repo = api.repo(Repo::new(hf_id.clone(), RepoType::Model));
+
+            let tok_cache = repo
+                .get("tokenizer.json")
+                .await
+                .with_context(|| download_hint(hf_id, "tokenizer.json"))?;
+            std::fs::copy(&tok_cache, &tokenizer_dest).context("saving tokenizer.json")?;
+            println!("Saved tokenizer to: {}", tokenizer_dest.display());
+
+            repo.get("model.safetensors")
+                .await
+                .with_context(|| download_hint(hf_id, "model.safetensors"))?
+        }
     };
 
     println!(
@@ -130,8 +231,18 @@ async fn run_async(args: ConvertArgs) -> Result<()> {
 
     convert_openai_to_burn::<B>(&safetensors_path, &output_path, &device, precision)?;
 
-    println!("Done!");
+    println!("\nDone. Model '{dir_name}' is ready. Try:");
+    println!("  wforge transcribe <AUDIO> -m {dir_name}");
+    println!("  wforge stream -m {dir_name}");
     Ok(())
+}
+
+/// Context message for a failed Hub download, suggesting the known aliases.
+fn download_hint(hf_id: &str, file: &str) -> String {
+    format!(
+        "downloading {file} from '{hf_id}'. Check the model id/network. Known aliases: {}",
+        KNOWN_ALIASES.join(", ")
+    )
 }
 
 /// Convert an OpenAI Whisper model to Burn format
