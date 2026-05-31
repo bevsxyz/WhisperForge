@@ -31,11 +31,11 @@ const EOT: u32 = 50257;
 ///    - Problem: Streaming path batches encoder forward passes for efficiency; `BatchedTranscriber`
 ///      always does mel→encoder for every segment individually, losing that optimization.
 ///    - Solution (choose one):
-///      a) Accept performance regression: Replace `transcribe_chunk(enc_slice)` with
-///         `BatchedTranscriber` calls. Simpler but slower on large batch sizes.
-///      b) Extend `BatchedTranscriber` with pre-encoded audio support:
-///         Add `transcribe_batch_from_encoder(&self, encodings: &[Tensor<B, 3>])`
-///         that skips mel→encoder and goes straight to decode. More complex but preserves perf.
+///      - a) Accept performance regression: replace `transcribe_chunk(enc_slice)` with
+///        `BatchedTranscriber` calls. Simpler but slower on large batch sizes.
+///      - b) Extend `BatchedTranscriber` with pre-encoded audio support:
+///        `transcribe_batch_from_encoder(&self, encodings: &[Tensor<B, 3>])` skips
+///        mel→encoder and goes straight to decode. More complex but preserves perf.
 ///    - Effort (option a): ~20 lines
 ///    - Effort (option b): ~100 lines (add new method, refactor `process_batch`, add tests)
 ///
@@ -48,7 +48,6 @@ const EOT: u32 = 50257;
 /// **When to integrate:** When the codebase benefits from having one authoritative decode
 /// implementation, or when a library consumer needs to use `BatchedTranscriber` and wants
 /// confidence in its real-world usage.
-
 pub struct BatchedTranscriber<B: Backend> {
     model: Whisper<B>,
     tokenizer: Tokenizer,
