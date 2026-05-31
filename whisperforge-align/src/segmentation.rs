@@ -142,7 +142,7 @@ impl AudioSegmenter {
 }
 
 /// Audio segment with samples and metadata
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct AudioSegment {
     /// Start sample index
     pub start_sample: usize,

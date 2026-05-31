@@ -11,6 +11,44 @@ use whisperforge_core::{
 const VOCAB_SIZE: usize = 51864;
 const EOT: u32 = 50257;
 
+/// Batched transcription interface for library consumers.
+///
+/// `BatchedTranscriber` is the authoritative batch-decode implementation, designed to be reusable
+/// by both the CLI binary and library consumers. Currently, the binary's `transcribe` command
+/// uses its own inline `transcribe_chunk()` function (lines 97–185 of `whisperforge/src/commands/transcribe.rs`)
+/// instead of calling this interface.
+///
+/// **Future integration plan** (when consolidating batch-decode logic):
+///
+/// 1. **VAD path** (low risk, high priority):
+///    - Location: `whisperforge/src/commands/transcribe.rs` lines 264–380
+///    - Change: Replace `transcribe_chunk(enc)` calls with `BatchedTranscriber.transcribe_single(segment)`
+///    - Benefit: Removes inline decode loop, uses library abstraction
+///    - Effort: ~30 lines, minimal risk (straightforward substitution)
+///
+/// 2. **Streaming path** (medium risk, requires performance consideration):
+///    - Location: `whisperforge/src/commands/transcribe.rs` lines 382+
+///    - Problem: Streaming path batches encoder forward passes for efficiency; `BatchedTranscriber`
+///      always does mel→encoder for every segment individually, losing that optimization.
+///    - Solution (choose one):
+///      a) Accept performance regression: Replace `transcribe_chunk(enc_slice)` with
+///         `BatchedTranscriber` calls. Simpler but slower on large batch sizes.
+///      b) Extend `BatchedTranscriber` with pre-encoded audio support:
+///         Add `transcribe_batch_from_encoder(&self, encodings: &[Tensor<B, 3>])`
+///         that skips mel→encoder and goes straight to decode. More complex but preserves perf.
+///    - Effort (option a): ~20 lines
+///    - Effort (option b): ~100 lines (add new method, refactor `process_batch`, add tests)
+///
+/// 3. **Testing & validation:**
+///    - Unit tests for the refactored path (already exist for `BatchedTranscriber`)
+///    - Integration test: run `wforge transcribe` on test audio, verify output is byte-identical
+///      before/after (catch subtle decode-order differences)
+///    - UAT: re-run Phase F streaming tests to ensure no regression
+///
+/// **When to integrate:** When the codebase benefits from having one authoritative decode
+/// implementation, or when a library consumer needs to use `BatchedTranscriber` and wants
+/// confidence in its real-world usage.
+
 pub struct BatchedTranscriber<B: Backend> {
     model: Whisper<B>,
     tokenizer: Tokenizer,
@@ -43,8 +81,21 @@ impl<B: Backend> BatchedTranscriber<B> {
         self
     }
 
-    /// Transcribe multiple audio segments in batches.
+    /// Transcribe multiple audio segments in batches, returning only text.
     pub fn transcribe_batch(&self, segments: &[AudioSegment]) -> Result<Vec<String>> {
+        let mut results = Vec::with_capacity(segments.len());
+        for chunk in segments.chunks(self.batch_size) {
+            let pairs = self.process_batch(chunk)?;
+            results.extend(pairs.into_iter().map(|(text, _)| text));
+        }
+        Ok(results)
+    }
+
+    /// Transcribe multiple segments and return both text and token IDs (for diarization, etc).
+    pub fn transcribe_batch_with_tokens(
+        &self,
+        segments: &[AudioSegment],
+    ) -> Result<Vec<(String, Vec<u32>)>> {
         let mut results = Vec::with_capacity(segments.len());
         for chunk in segments.chunks(self.batch_size) {
             results.extend(self.process_batch(chunk)?);
@@ -52,8 +103,18 @@ impl<B: Backend> BatchedTranscriber<B> {
         Ok(results)
     }
 
+    /// Transcribe a single audio segment, returning text and token IDs.
+    pub fn transcribe_single(&self, segment: &AudioSegment) -> Result<(String, Vec<u32>)> {
+        let results = self.process_batch(std::slice::from_ref(segment))?;
+        results
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no transcription result"))
+    }
+
     /// Process one batch: mel-encode all segments together, decode each sequentially.
-    fn process_batch(&self, segments: &[AudioSegment]) -> Result<Vec<String>> {
+    /// Returns both text and token IDs for each segment.
+    fn process_batch(&self, segments: &[AudioSegment]) -> Result<Vec<(String, Vec<u32>)>> {
         let audio_chunks: Vec<_> = segments
             .iter()
             .map(|s| s.to_audio_data(self.sample_rate))
@@ -145,7 +206,7 @@ impl<B: Backend> BatchedTranscriber<B> {
                 .tokenizer
                 .decode(&text_tokens, true)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            results.push(text.trim().to_string());
+            results.push((text.trim().to_string(), text_tokens));
         }
 
         Ok(results)

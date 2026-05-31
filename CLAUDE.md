@@ -118,6 +118,15 @@ Key files in `whisperforge-core/src/`:
 - [stft_gpu.rs](whisperforge-core/src/stft_gpu.rs) — CubeCL DFT kernel (feature `cubecl-stft`).
 - `CODEINDEX.md` — auto-generated public API surface (gitignored); check here before reading a source file.
 
+### Crate alignment & future refactoring
+
+**Current state (aligned):**
+- `whisperforge-core`: streaming algorithms (Chunker, Committer, Endpointer) in lib; batch decode (`decode_window`) in lib
+- `whisperforge`: CLI orchestration (device dispatch, sink management, stream main loop) in binary ✓
+- `whisperforge-align`: `BatchedTranscriber` available as library interface with public methods (`transcribe_single()`, `transcribe_batch_with_tokens()`)
+
+**Known gap:** Binary's `transcribe` command uses inline `transcribe_chunk()` (lines 97–185) instead of calling `BatchedTranscriber`. This is intentional — the paths operate at different levels (binary works post-encoder for batching efficiency; library API starts from raw audio). See [whisperforge-align/src/batching.rs](whisperforge-align/src/batching.rs) **module documentation** for the full integration plan if you want to consolidate later (includes VAD path integration steps and streaming path tradeoffs).
+
 ## Hard-won lessons
 
 - **Power spectrum**: `|STFT|²` (`norm_sqr()`) required. `norm()` gives √-scaled spectrograms → near-silence or EOT domination.
