@@ -13,12 +13,13 @@ use tokenizers::Tokenizer;
 use whisperforge_core::{
     CaptureSource, Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, FakeMic,
     MicCapture, PromptContext, QualityGate, SileroVad, Whisper, WindowConfig, avg_logprob,
-    compute_mel_from_samples, decode_window, ensure_silero_model,
-    list_input_devices as core_list_input_devices, passes_quality_gate,
-    stream_decode::DecodeContext,
+    compute_mel_from_samples, decode_window, detect_language, ensure_silero_model,
+    language_token_id, list_input_devices as core_list_input_devices, passes_quality_gate,
+    stream_decode::DecodeContext, task_token_id,
 };
 
 use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
+use super::transcribe::TaskArg;
 use crate::device::{DeviceChoice, ResolvedDevice, resolve};
 use crate::stream_ui::{FileTranscriptSink, JsonSink, MultiSink, StreamSink, TerminalSink};
 
@@ -35,6 +36,16 @@ pub struct StreamArgs {
     /// Backend selection: auto (default), cpu, wgpu, or cuda (feature-gated).
     #[arg(long, value_enum, default_value_t = DeviceChoice::Auto)]
     pub device: DeviceChoice,
+
+    /// Spoken-language code (e.g. `en`, `hi`, `es`) or `auto` to detect on the first
+    /// speech window. Requires a multilingual model; `.en` models support `en` only.
+    #[arg(short, long, default_value = "en")]
+    pub language: String,
+
+    /// Decode task: `transcribe` (output in the spoken language) or `translate`
+    /// (X → English only — Whisper cannot output any other target language).
+    #[arg(long, value_enum, default_value_t = TaskArg::Transcribe)]
+    pub task: TaskArg,
 
     /// Optional input device name (default = system default)
     #[arg(long)]
@@ -189,8 +200,28 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
 
     let tok = |s: &str, fb: u32| tokenizer.token_to_id(s).unwrap_or(fb);
     let sot_token = tok("<|startoftranscript|>", 50258);
-    let language_token = tok("<|en|>", 50259);
-    let transcribe_token = tok("<|transcribe|>", 50359);
+
+    // Task token (transcribe vs translate-to-English).
+    let task_token = task_token_id(&tokenizer, args.task.into())
+        .context("model tokenizer has no task token (<|transcribe|>/<|translate|>)")?;
+
+    // Language: resolve an explicit code now, or detect on the first speech window for `auto`.
+    // `language_token` stays mutable so auto-detect can lock it in mid-session.
+    let auto_detect_language = args.language == "auto";
+    let mut language_detected = !auto_detect_language;
+    let mut language_token = if auto_detect_language {
+        tok("<|en|>", 50259) // provisional until the first speech window detects
+    } else {
+        language_token_id(&tokenizer, &args.language).with_context(|| {
+            format!(
+                "model tokenizer has no <|{}|> token — you're likely using an English-only (.en) \
+                 model. Convert a multilingual model, e.g. `wforge convert --model-id \
+                 openai/whisper-small`.",
+                args.language
+            )
+        })?
+    };
+
     let eot_token = tok("<|endoftext|>", 50257);
     let no_speech_token = tok("<|nospeech|>", 50362);
     let notimestamps_token = tok("<|notimestamps|>", 50363);
@@ -370,10 +401,20 @@ fn run_stream<B: Backend>(args: StreamArgs, device: B::Device) -> Result<()> {
             let encoder_out = model.forward_encoder(mel);
             let enc_ms = t_enc_start.elapsed().as_millis();
 
+            // `--language auto`: detect on the first speech window, then lock for the session.
+            if !language_detected {
+                let (code, id) =
+                    detect_language(&model, encoder_out.clone(), &tokenizer, sot_token, &device)
+                        .context("language auto-detection")?;
+                eprintln!("Detected language: {code}");
+                language_token = id;
+                language_detected = true;
+            }
+
             let ctx = DecodeContext {
                 prompt_tokens: prompt_ctx.prompt_tokens(),
                 language_token,
-                transcribe_token,
+                task_token,
                 sot_token,
                 eot_token,
                 no_speech_token,

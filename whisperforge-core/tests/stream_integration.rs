@@ -135,7 +135,7 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
             let ctx = DecodeContext {
                 prompt_tokens: prompt_ctx.prompt_tokens(),
                 language_token,
-                transcribe_token,
+                task_token: transcribe_token,
                 sot_token,
                 eot_token,
                 no_speech_token,
@@ -333,7 +333,7 @@ fn test_stream_pipeline_long_form_trim() -> Result<()> {
             let ctx = DecodeContext {
                 prompt_tokens: prompt_ctx.prompt_tokens(),
                 language_token,
-                transcribe_token,
+                task_token: transcribe_token,
                 sot_token,
                 eot_token,
                 no_speech_token,

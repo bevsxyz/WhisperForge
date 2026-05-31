@@ -2,21 +2,40 @@ use anyhow::{Context, Result};
 use burn::tensor::backend::Backend;
 use burn_flex::Flex;
 use burn_flex::FlexDevice;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::cmp::Ordering;
 use std::io::Write;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 use whisperforge_align::{AudioSegmenter, SrtEntry, SrtWriter};
 use whisperforge_core::{
-    AudioChunkIterator, DecodingConfig, HybridDecoder, KvCache, TranscriptionResult,
+    AudioChunkIterator, DecodingConfig, HybridDecoder, KvCache, Task, TranscriptionResult,
     TranscriptionSegment, Whisper, audio, audio::AudioData, batch_mel_spectrograms,
-    extract_speaker_embedding, forward_decoder_cached, load_whisper,
+    detect_language, extract_speaker_embedding, forward_decoder_cached, language_token_id,
+    load_whisper, task_token_id,
 };
 use whisperforge_diarize::SpeakerDiarizer;
 
 use super::list_models::{MODELS_DIR_ENV, model_base_path, resolve_models_dir};
 use crate::device::{DeviceChoice, ResolvedDevice, resolve};
+
+/// CLI surface for the Whisper decode task. `Translate` is X → English only —
+/// Whisper has no other-target output (see `whisperforge_core::language`).
+#[derive(ValueEnum, Clone, Copy, Debug, Default)]
+pub enum TaskArg {
+    #[default]
+    Transcribe,
+    Translate,
+}
+
+impl From<TaskArg> for Task {
+    fn from(t: TaskArg) -> Self {
+        match t {
+            TaskArg::Transcribe => Task::Transcribe,
+            TaskArg::Translate => Task::Translate,
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 pub struct TranscribeArgs {
@@ -26,8 +45,15 @@ pub struct TranscribeArgs {
     #[arg(short, long, default_value = "tiny_en_converted")]
     pub model: String,
 
+    /// Spoken-language code (e.g. `en`, `hi`, `es`) or `auto` for first-token detection.
+    /// Requires a multilingual model; English-only (.en) models support `en` only.
     #[arg(short, long, default_value = "en")]
     pub language: String,
+
+    /// Decode task: `transcribe` (output in the spoken language) or `translate`
+    /// (X → English only — Whisper cannot output any other target language).
+    #[arg(long, value_enum, default_value_t = TaskArg::Transcribe)]
+    pub task: TaskArg,
 
     #[arg(short, long)]
     pub output: Option<String>,
@@ -103,15 +129,25 @@ fn transcribe_chunk<B: Backend>(
 ) -> Result<(String, Vec<u32>)> {
     let tok = |s: &str, fb: u32| tokenizer.token_to_id(s).unwrap_or(fb);
     let sot = tok("<|startoftranscript|>", 50258);
-    let en = tok("<|en|>", 50259);
-    let transcribe_tok = tok("<|transcribe|>", 50359);
     let no_timestamps = tok("<|notimestamps|>", 50363);
     let eot = tok("<|endoftext|>", 50257);
     let no_speech = tok("<|nospeech|>", 50362);
 
+    // Resolve language + task tokens from the decode config (no longer hardcoded to English).
+    let lang_tok = language_token_id(tokenizer, &config.language).with_context(|| {
+        format!(
+            "model tokenizer has no <|{}|> token — you're likely using an English-only (.en) \
+             model. Convert a multilingual model, e.g. `wforge convert --model-id \
+             openai/whisper-small`.",
+            config.language
+        )
+    })?;
+    let task_tok = task_token_id(tokenizer, config.task)
+        .context("model tokenizer has no task token (<|transcribe|>/<|translate|>)")?;
+
     let decoder = HybridDecoder::new(config.clone());
     let vocab_size = 51864usize;
-    let init_tokens = [sot, en, transcribe_tok, no_timestamps];
+    let init_tokens = [sot, lang_tok, task_tok, no_timestamps];
     let mut all_logits: Vec<Vec<f32>> = Vec::new();
     let budget = config.max_length.saturating_sub(init_tokens.len());
 
@@ -249,7 +285,9 @@ fn run_backend<B: Backend>(
     if let Some(no_speech_threshold) = args.no_speech_threshold {
         decoding_config = decoding_config.with_no_speech_threshold(no_speech_threshold);
     }
-    decoding_config = decoding_config.with_language(args.language.clone());
+    decoding_config = decoding_config
+        .with_language(args.language.clone())
+        .with_task(args.task.into());
 
     println!(
         "Decoding config: preset={}, beam_size={}, temperatures={:?}, length_penalty={}",
@@ -307,6 +345,17 @@ fn run_backend<B: Backend>(
                 mel
             };
             let enc = model.forward_encoder(mel);
+
+            // Detect language once (on the first encoder output) when `--language auto`.
+            if decoding_config.language == "auto" {
+                let sot = tokenizer
+                    .token_to_id("<|startoftranscript|>")
+                    .unwrap_or(50258);
+                let (code, _) = detect_language(&model, enc.clone(), &tokenizer, sot, &device)
+                    .context("language auto-detection")?;
+                println!("Detected language: {code}");
+                decoding_config = decoding_config.with_language(code);
+            }
 
             println!(
                 "\n[segment {}/{}  {:.1}s – {:.1}s]",
@@ -417,6 +466,19 @@ fn run_backend<B: Backend>(
             mel
         };
         let enc = model.forward_encoder(mel);
+
+        // Detect language once (on the first encoder output) when `--language auto`.
+        if decoding_config.language == "auto" {
+            let [_, frames, d_model] = enc.dims();
+            let sot = tokenizer
+                .token_to_id("<|startoftranscript|>")
+                .unwrap_or(50258);
+            let probe = enc.clone().slice([0..1, 0..frames, 0..d_model]);
+            let (code, _) = detect_language(&model, probe, &tokenizer, sot, &device)
+                .context("language auto-detection")?;
+            println!("Detected language: {code}");
+            decoding_config = decoding_config.with_language(code);
+        }
 
         for (j, chunk) in sub.iter().enumerate() {
             chunk_index += 1;

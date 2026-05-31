@@ -7,6 +7,8 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::io::Write;
 
+use crate::language::Task;
+
 /// Configuration for beam search decoding
 #[derive(Debug, Clone)]
 pub struct DecodingConfig {
@@ -20,8 +22,10 @@ pub struct DecodingConfig {
     pub no_speech_threshold: f32,
     /// Maximum tokens to generate
     pub max_length: usize,
-    /// Language token (e.g., "en" for English)
+    /// Language token (e.g., "en" for English; "auto" for first-token detection)
     pub language: String,
+    /// Decode task: `Transcribe` (output in `language`) or `Translate` (X → English only).
+    pub task: Task,
     /// Gzip compression ratio threshold — ratio above this signals a hallucination loop (default 2.4)
     pub compression_ratio_threshold: f32,
     /// Average log-probability threshold — below this signals low-confidence output (default -1.0)
@@ -37,6 +41,7 @@ impl Default for DecodingConfig {
             no_speech_threshold: 0.6,
             max_length: 448, // Whisper max context
             language: "en".to_string(),
+            task: Task::Transcribe,
             compression_ratio_threshold: 2.4,
             log_prob_threshold: -1.0,
         }
@@ -101,6 +106,12 @@ impl DecodingConfig {
     /// Set language
     pub fn with_language(mut self, language: String) -> Self {
         self.language = language;
+        self
+    }
+
+    /// Set decode task (transcribe vs translate-to-English)
+    pub fn with_task(mut self, task: Task) -> Self {
+        self.task = task;
         self
     }
 }

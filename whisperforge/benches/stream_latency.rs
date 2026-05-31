@@ -139,7 +139,7 @@ fn run_bench<B: Backend>(audio: &Path, models_dir: &Path, device: B::Device) -> 
         let ctx = DecodeContext {
             prompt_tokens: prompt_ctx.prompt_tokens(),
             language_token,
-            transcribe_token,
+            task_token: transcribe_token,
             sot_token,
             eot_token,
             no_speech_token,

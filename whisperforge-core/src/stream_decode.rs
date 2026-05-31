@@ -27,7 +27,8 @@ pub struct DecodeContext<'a> {
     /// Empty slice for the first window.
     pub prompt_tokens: &'a [u32],
     pub language_token: u32,
-    pub transcribe_token: u32,
+    /// Task token (`<|transcribe|>` or `<|translate|>`). Translate is X → English only.
+    pub task_token: u32,
     pub sot_token: u32,
     pub eot_token: u32,
     pub no_speech_token: u32,
@@ -89,7 +90,7 @@ pub fn decode_window<B: Backend>(
     let init = [
         ctx.sot_token,
         ctx.language_token,
-        ctx.transcribe_token,
+        ctx.task_token,
         ctx.notimestamps_token,
     ];
     let mut logits: Vec<f32> = Vec::new();
@@ -294,7 +295,7 @@ mod tests {
         DecodeContext {
             prompt_tokens: &[],
             language_token: 50259,
-            transcribe_token: 50359,
+            task_token: 50359,
             sot_token: 50258,
             eot_token: 50257,
             no_speech_token: 50362,
@@ -504,7 +505,7 @@ mod tests {
             prompt_tokens: &[],
             sot_token: tok("<|startoftranscript|>", 50258),
             language_token: tok("<|en|>", 50259),
-            transcribe_token: tok("<|transcribe|>", 50359),
+            task_token: tok("<|transcribe|>", 50359),
             eot_token: tok("<|endoftext|>", 50257),
             no_speech_token: tok("<|nospeech|>", 50362),
             notimestamps_token: tok("<|notimestamps|>", 50363),

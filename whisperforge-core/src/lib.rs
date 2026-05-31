@@ -7,6 +7,7 @@ pub mod audio_capture;
 pub mod decoding;
 pub mod embed;
 pub mod kv_cache;
+pub mod language;
 pub mod load;
 pub mod model;
 pub mod stream_decode;
@@ -28,6 +29,7 @@ pub use audio_capture::{CaptureSource, FakeMic, MicCapture, list_input_devices};
 pub use decoding::{BeamSearchDecoder, DecodingConfig, GreedyDecoder, HybridDecoder};
 pub use embed::extract_speaker_embedding;
 pub use kv_cache::{KvCache, forward_decoder_cached};
+pub use language::{LANGUAGE_CODES, Task, detect_language, language_token_id, task_token_id};
 pub use load::{load_config_from_bytes, load_whisper_from_bytes};
 pub use model::{AudioEncoderConfig, TextDecoderConfig, Whisper, WhisperConfig};
 pub use stream_decode::{
