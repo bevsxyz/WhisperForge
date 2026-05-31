@@ -16,9 +16,7 @@ use whisperforge_core::{
 };
 use whisperforge_diarize::SpeakerDiarizer;
 
-use super::list_models::{
-    MODELS_DIR_ENV, model_base_path, model_tokenizer_path, resolve_models_dir,
-};
+use super::list::{model_base_path, model_tokenizer_path, resolve_models_dir};
 use crate::device::{DeviceChoice, ResolvedDevice, resolve};
 
 /// CLI surface for the Whisper decode task. `Translate` is X → English only —
@@ -39,13 +37,50 @@ impl From<TaskArg> for Task {
     }
 }
 
+/// Output rendering for the transcript.
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[clap(rename_all = "lowercase")]
+pub enum Format {
+    #[default]
+    Text,
+    /// SubRip subtitles (`HH:MM:SS,mmm`) with per-segment timestamps.
+    Srt,
+    /// WebVTT subtitles (`HH:MM:SS.mmm`) with per-segment timestamps.
+    Vtt,
+    Json,
+}
+
+/// Decoding quality/speed preset. Maps to `DecodingConfig::{fast,balanced,accurate}`.
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[clap(rename_all = "lowercase")]
+pub enum Preset {
+    Fast,
+    #[default]
+    Balanced,
+    Accurate,
+}
+
+impl std::fmt::Display for Preset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Preset::Fast => "fast",
+            Preset::Balanced => "balanced",
+            Preset::Accurate => "accurate",
+        };
+        f.write_str(s)
+    }
+}
+
 #[derive(Parser, Debug)]
 pub struct TranscribeArgs {
-    #[arg(short, long)]
+    /// Path to the audio file to transcribe (wav/mp3/flac/ogg/m4a).
+    #[arg(value_name = "AUDIO")]
     pub audio_file: Option<String>,
 
-    #[arg(short, long, default_value = "tiny_en_converted")]
-    pub model: String,
+    /// Model name (see `wforge list models`). If omitted on a TTY you'll be prompted;
+    /// defaults to `tiny.en` when present.
+    #[arg(short, long)]
+    pub model: Option<String>,
 
     /// Spoken-language code (e.g. `en`, `hi`, `es`) or `auto` for first-token detection.
     /// Requires a multilingual model; English-only (.en) models support `en` only.
@@ -66,61 +101,57 @@ pub struct TranscribeArgs {
     #[arg(short, long)]
     pub output: Option<String>,
 
-    /// Output format: text, srt, json
-    #[arg(long, default_value = "text")]
-    pub output_format: String,
+    /// Output format
+    #[arg(short = 'f', long, value_enum, default_value_t = Format::Text)]
+    pub format: Format,
 
-    /// Decoding preset: fast, balanced, accurate
-    #[arg(long, default_value = "balanced")]
-    pub decoding_preset: String,
-
-    /// Beam size (overrides preset)
-    #[arg(long)]
-    pub beam_size: Option<usize>,
-
-    /// Temperature for sampling (overrides preset)
-    #[arg(long)]
-    pub temperature: Option<f32>,
-
-    /// Length penalty (overrides preset)
-    #[arg(long)]
-    pub length_penalty: Option<f32>,
-
-    /// No-speech detection threshold
-    #[arg(long)]
-    pub no_speech_threshold: Option<f32>,
-
-    /// Directory to load model `.mpk`/`.cfg` files from. Defaults to `$WF_MODELS_DIR` or `./models/`.
-    #[arg(long, env = MODELS_DIR_ENV)]
-    pub models_dir: Option<PathBuf>,
-
-    /// Enable voice activity detection (VAD) filtering
-    #[arg(long)]
-    pub vad_enabled: bool,
-
-    /// VAD detection threshold (0.0-1.0, higher = stricter)
-    #[arg(long)]
-    pub vad_threshold: Option<f32>,
+    /// Decoding preset
+    #[arg(long, value_enum, default_value_t = Preset::Balanced)]
+    pub preset: Preset,
 
     /// Backend selection: auto (default), cpu, wgpu, or cuda (feature-gated).
     #[arg(long, value_enum, default_value_t = DeviceChoice::Auto)]
     pub device: DeviceChoice,
 
+    /// Beam size (overrides preset)
+    #[arg(long, help_heading = "Advanced decoding")]
+    pub beam_size: Option<usize>,
+
+    /// Temperature for sampling (overrides preset)
+    #[arg(long, help_heading = "Advanced decoding")]
+    pub temperature: Option<f32>,
+
+    /// Length penalty (overrides preset)
+    #[arg(long, help_heading = "Advanced decoding")]
+    pub length_penalty: Option<f32>,
+
+    /// No-speech detection threshold
+    #[arg(long, help_heading = "Advanced decoding")]
+    pub no_speech_threshold: Option<f32>,
+
+    /// Enable voice activity detection (VAD) filtering
+    #[arg(long, help_heading = "Voice activity detection")]
+    pub vad: bool,
+
+    /// VAD detection threshold (0.0-1.0, higher = stricter)
+    #[arg(long, help_heading = "Voice activity detection")]
+    pub vad_threshold: Option<f32>,
+
     /// Enable speaker diarization (assigns SPEAKER_NN labels to segments)
-    #[arg(long)]
+    #[arg(long, help_heading = "Diarization")]
     pub diarize: bool,
 
     /// Cosine similarity threshold for speaker clustering (0.0–1.0, default 0.7)
-    #[arg(long, default_value = "0.7")]
+    #[arg(long, default_value = "0.7", help_heading = "Diarization")]
     pub diarize_threshold: f32,
 
     /// Encoder forward-pass batch size. Larger = faster but more VRAM/RAM.
     /// Default: 1 on WGPU (54 MB, safe on any GPU), 4 on `--device cpu` (216 MB, safe on ≥1 GB RAM).
-    #[arg(long)]
+    #[arg(long, help_heading = "Tuning")]
     pub encoder_batch_size: Option<usize>,
 
     /// Debug inference with different encoder inputs
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub debug_inference: bool,
 }
 
@@ -145,8 +176,7 @@ fn transcribe_chunk<B: Backend>(
     let lang_tok = language_token_id(tokenizer, &config.language).with_context(|| {
         format!(
             "model tokenizer has no <|{}|> token — you're likely using an English-only (.en) \
-             model. Convert a multilingual model, e.g. `wforge convert --model-id \
-             openai/whisper-small`.",
+             model. Get a multilingual model, e.g. `wforge pull small`.",
             config.language
         )
     })?;
@@ -242,27 +272,50 @@ fn result_to_srt(result: &TranscriptionResult) -> String {
     writer.to_string()
 }
 
+/// Format a `TranscriptionResult` as a WebVTT string (per-segment timestamps).
+/// WebVTT differs from SRT only in the header and a `.` (not `,`) before milliseconds.
+fn result_to_vtt(result: &TranscriptionResult) -> String {
+    let mut out = String::from("WEBVTT\n\n");
+    for seg in &result.segments {
+        let text = match &seg.speaker {
+            Some(spk) => format!("[{spk}]: {}", seg.text),
+            None => seg.text.clone(),
+        };
+        out.push_str(&format!(
+            "{} --> {}\n{}\n\n",
+            vtt_time(seg.start as f64),
+            vtt_time(seg.end as f64),
+            text.trim()
+        ));
+    }
+    out
+}
+
+/// Format `seconds` as a WebVTT timestamp `HH:MM:SS.mmm`.
+fn vtt_time(seconds: f64) -> String {
+    let total_ms = (seconds.max(0.0) * 1000.0).round() as u64;
+    let ms = total_ms % 1000;
+    let total_s = total_ms / 1000;
+    let s = total_s % 60;
+    let m = (total_s / 60) % 60;
+    let h = total_s / 3600;
+    format!("{h:02}:{m:02}:{s:02}.{ms:03}")
+}
+
 fn run_backend<B: Backend>(
     args: TranscribeArgs,
+    models_dir: Option<PathBuf>,
     device: B::Device,
     is_cpu_backend: bool,
     mel_fn: impl Fn(&[AudioData], &B::Device) -> Result<burn::tensor::Tensor<B, 3>>,
 ) -> Result<()> {
-    let audio_file = args
-        .audio_file
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Audio file is required (use --audio-file)"))?;
+    let audio_file = args.audio_file.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("Audio file is required: wforge transcribe <AUDIO> -m <model>")
+    })?;
 
-    let models_dir = resolve_models_dir(args.models_dir.as_deref());
-    let base = model_base_path(&models_dir, &args.model);
-    let mpk_path = base.with_extension("mpk");
-    if !mpk_path.exists() {
-        anyhow::bail!(
-            "model '{name}' not found in {dir}. Run `wforge list-models` to see available models, or `wforge convert --model-id openai/whisper-{name} --output {dir}/{name}` to fetch and convert it.",
-            name = args.model,
-            dir = models_dir.display(),
-        );
-    }
+    let models_dir = resolve_models_dir(models_dir.as_deref());
+    let model_name = crate::interactive::resolve_model(&models_dir, args.model.as_deref())?;
+    let base = model_base_path(&models_dir, &model_name);
 
     println!("Loading model: {}", base.display());
     let model: Whisper<B> = load_whisper(
@@ -271,15 +324,15 @@ fn run_backend<B: Backend>(
     )?;
     println!("Model loaded successfully!");
 
-    let tokenizer_path = model_tokenizer_path(&models_dir, &args.model);
+    let tokenizer_path = model_tokenizer_path(&models_dir, &model_name);
     println!("Loading tokenizer from: {}", tokenizer_path.display());
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
-    let mut decoding_config = match args.decoding_preset.as_str() {
-        "fast" => DecodingConfig::fast(),
-        "accurate" => DecodingConfig::accurate(),
-        _ => DecodingConfig::balanced(),
+    let mut decoding_config = match args.preset {
+        Preset::Fast => DecodingConfig::fast(),
+        Preset::Balanced => DecodingConfig::balanced(),
+        Preset::Accurate => DecodingConfig::accurate(),
     };
     if let Some(beam_size) = args.beam_size {
         decoding_config = decoding_config.with_beam_size(beam_size);
@@ -299,7 +352,7 @@ fn run_backend<B: Backend>(
 
     println!(
         "Decoding config: preset={}, beam_size={}, temperatures={:?}, length_penalty={}",
-        args.decoding_preset,
+        args.preset,
         decoding_config.beam_size,
         decoding_config.temperatures,
         decoding_config.length_penalty
@@ -308,7 +361,7 @@ fn run_backend<B: Backend>(
     println!("Streaming audio from: {}", audio_file);
 
     // VAD path: requires full audio, so fall back to eager loading for now
-    if args.vad_enabled {
+    if args.vad {
         let audio_data = audio::load_audio_file(audio_file)?;
         let processed_audio = audio_data.to_16khz_mono()?;
         println!(
@@ -417,11 +470,12 @@ fn run_backend<B: Backend>(
             language: Some(args.language.clone()),
         };
 
-        let output_body = match args.output_format.as_str() {
-            "srt" => result_to_srt(&result),
-            "json" => serde_json::to_string_pretty(&result)
+        let output_body = match args.format {
+            Format::Srt => result_to_srt(&result),
+            Format::Vtt => result_to_vtt(&result),
+            Format::Json => serde_json::to_string_pretty(&result)
                 .context("serialising TranscriptionResult to JSON")?,
-            _ => result.text.clone(),
+            Format::Text => result.text.clone(),
         };
 
         println!("\nTranscription result:\n----------------------------------------");
@@ -447,7 +501,7 @@ fn run_backend<B: Backend>(
 
     println!(
         "Transcribing with {} decoding (encoder_batch_size={})...",
-        args.decoding_preset, enc_batch
+        args.preset, enc_batch
     );
 
     let mut segments: Vec<TranscriptionSegment> = Vec::new();
@@ -544,11 +598,12 @@ fn run_backend<B: Backend>(
         language: Some(args.language.clone()),
     };
 
-    let output_body = match args.output_format.as_str() {
-        "srt" => result_to_srt(&result),
-        "json" => serde_json::to_string_pretty(&result)
+    let output_body = match args.format {
+        Format::Srt => result_to_srt(&result),
+        Format::Vtt => result_to_vtt(&result),
+        Format::Json => serde_json::to_string_pretty(&result)
             .context("serialising TranscriptionResult to JSON")?,
-        _ => result.text.clone(),
+        Format::Text => result.text.clone(),
     };
 
     println!("\nTranscription result:\n----------------------------------------");
@@ -563,15 +618,14 @@ fn run_backend<B: Backend>(
     Ok(())
 }
 
-pub fn run(args: TranscribeArgs) -> Result<()> {
+pub fn run(args: TranscribeArgs, models_dir: Option<PathBuf>) -> Result<()> {
     println!("WhisperForge v{}", env!("CARGO_PKG_VERSION"));
-    println!("Loading model: {}", args.model);
 
     let resolved = resolve(args.device)?;
     match resolved {
         ResolvedDevice::Cpu => {
             println!("Backend: Flex (CPU)");
-            run_backend::<Flex<f32>>(args, FlexDevice, true, |chunks, dev| {
+            run_backend::<Flex<f32>>(args, models_dir, FlexDevice, true, |chunks, dev| {
                 batch_mel_spectrograms::<Flex<f32>>(chunks, 400, 160, 80, dev)
             })
         }
@@ -587,6 +641,7 @@ pub fn run(args: TranscribeArgs) -> Result<()> {
                 println!("Backend: WGPU (GPU, CubeCL STFT)");
                 run_backend::<CubeBackend<burn_wgpu::WgpuRuntime, f32, i32, u32>>(
                     args,
+                    models_dir,
                     device,
                     false,
                     |chunks, dev| batch_mel_spectrograms_wgpu(chunks, 400, 160, 80, dev),
@@ -596,7 +651,7 @@ pub fn run(args: TranscribeArgs) -> Result<()> {
             {
                 use burn::backend::Wgpu;
                 println!("Backend: WGPU (GPU)");
-                run_backend::<Wgpu>(args, device, false, |chunks, dev| {
+                run_backend::<Wgpu>(args, models_dir, device, false, |chunks, dev| {
                     batch_mel_spectrograms::<Wgpu>(chunks, 400, 160, 80, dev)
                 })
             }
@@ -607,7 +662,7 @@ pub fn run(args: TranscribeArgs) -> Result<()> {
             type B = Cuda<f32, i32>;
             println!("Backend: CUDA (CubeCL)");
             let device = CudaDevice::default();
-            run_backend::<B>(args, device, false, |chunks, dev| {
+            run_backend::<B>(args, models_dir, device, false, |chunks, dev| {
                 batch_mel_spectrograms::<B>(chunks, 400, 160, 80, dev)
             })
         }
