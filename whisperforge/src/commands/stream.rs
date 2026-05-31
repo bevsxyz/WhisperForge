@@ -39,6 +39,12 @@ pub struct StreamArgs {
 
     /// Spoken-language code (e.g. `en`, `hi`, `es`) or `auto` to detect on the first
     /// speech window. Requires a multilingual model; `.en` models support `en` only.
+    ///
+    /// Experimental "translate-into-X": forcing a language code that differs from the
+    /// spoken audio (with `--task transcribe`) coerces Whisper into emitting that
+    /// language. Never a training objective — best-effort only, works on
+    /// `large`/`large-v1`, mostly broken on `large-v2`+, and drifts back to the spoken
+    /// language on long audio.
     #[arg(short, long, default_value = "en")]
     pub language: String,
 
