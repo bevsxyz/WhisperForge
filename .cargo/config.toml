@@ -1,0 +1,6 @@
+[build]
+rustc-wrapper = "sccache"
+
+# mold is Linux-only; scoped to the x86_64 Linux target so macOS/Windows are unaffected.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

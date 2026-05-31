@@ -4,6 +4,8 @@ uv = "latest"
 rust = "1.95.0"
 "aqua:git-cliff" = "latest"
 "cargo:cargo-release" = "latest"
+"aqua:mold" = "latest"
+"aqua:sccache" = "latest"
 
 [tasks.pre-commit]
 description = "Pre-commit checks: fmt"

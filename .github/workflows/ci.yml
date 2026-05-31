@@ -25,7 +25,13 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev mold
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Set RUSTC_WRAPPER
+        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Cache Cargo registry and build
         uses: actions/cache@v4
