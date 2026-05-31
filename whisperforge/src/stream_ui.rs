@@ -14,6 +14,18 @@ pub trait StreamSink {
     fn on_partial(&mut self, committed: &str, tentative: &str) -> Result<()>;
     fn on_commit(&mut self, new_committed_text: &str, at_secs: f32) -> Result<()>;
     fn on_endpoint(&mut self, full_utterance: &str, start_secs: f32, end_secs: f32) -> Result<()>;
+    /// Per-window decode telemetry. Default impl is a no-op; sinks that care about
+    /// quality observability (currently `JsonSink`) override this. Called once per
+    /// window decode, after `decode_window` returns and before `committer.ingest`.
+    fn on_decode_metrics(
+        &mut self,
+        _avg_logprob: f32,
+        _min_logprob: f32,
+        _n_tokens: usize,
+        _cap_hit: bool,
+    ) -> Result<()> {
+        Ok(())
+    }
     fn close(&mut self) -> Result<()>;
 }
 
@@ -93,7 +105,15 @@ impl StreamSink for TerminalSink {
     }
 }
 
-/// NDJSON output sink — body implemented in C11.
+/// NDJSON output sink. One JSON object per line, all carrying `t` (seconds since sink construction)
+/// and `type`. Event types:
+/// - `partial`: `{committed, tentative}` — current best-effort transcript snapshot per stride
+/// - `commit`: `{text, at_secs}` — newly stable text since the previous commit
+/// - `endpoint`: `{text, start_secs, end_secs}` — completed utterance at EOU
+/// - `decode_metrics`: `{avg_logprob, min_logprob, n_tokens, cap_hit}` — per-window decoder telemetry,
+///   emitted once per `decode_window` call. `avg_logprob`/`min_logprob` are `null` when no content
+///   tokens were decoded (e.g. no-speech-gated windows).
+/// - `shutdown`: `{}` — emitted by `close()`.
 pub struct JsonSink<W: Write> {
     pub writer: W,
     start: std::time::Instant,
@@ -139,6 +159,32 @@ impl<W: Write> StreamSink for JsonSink<W> {
             self.writer,
             "{}",
             json!({"t": t, "type": "endpoint", "text": full_utterance, "start_secs": start_secs, "end_secs": end_secs})
+        )?;
+        Ok(())
+    }
+
+    fn on_decode_metrics(
+        &mut self,
+        avg_logprob: f32,
+        min_logprob: f32,
+        n_tokens: usize,
+        cap_hit: bool,
+    ) -> Result<()> {
+        let t = self.elapsed_t();
+        let avg = if avg_logprob.is_finite() {
+            json!(avg_logprob)
+        } else {
+            json!(null)
+        };
+        let min = if min_logprob.is_finite() {
+            json!(min_logprob)
+        } else {
+            json!(null)
+        };
+        writeln!(
+            self.writer,
+            "{}",
+            json!({"t": t, "type": "decode_metrics", "avg_logprob": avg, "min_logprob": min, "n_tokens": n_tokens, "cap_hit": cap_hit})
         )?;
         Ok(())
     }
@@ -217,6 +263,18 @@ impl StreamSink for MultiSink {
     fn on_endpoint(&mut self, full_utterance: &str, start_secs: f32, end_secs: f32) -> Result<()> {
         for s in &mut self.sinks {
             s.on_endpoint(full_utterance, start_secs, end_secs)?;
+        }
+        Ok(())
+    }
+    fn on_decode_metrics(
+        &mut self,
+        avg_logprob: f32,
+        min_logprob: f32,
+        n_tokens: usize,
+        cap_hit: bool,
+    ) -> Result<()> {
+        for s in &mut self.sinks {
+            s.on_decode_metrics(avg_logprob, min_logprob, n_tokens, cap_hit)?;
         }
         Ok(())
     }

@@ -7,5 +7,5 @@ cargo run --release -p whisperforge -- stream \
   --no-realtime --json
 ```
 
-Every output line must be valid NDJSON with `type` ∈ {partial, commit, endpoint, shutdown}.
+Every output line must be valid NDJSON with `type` ∈ {partial, commit, endpoint, decode_metrics, shutdown}.
 The last line should be `{"type":"shutdown",...}`.

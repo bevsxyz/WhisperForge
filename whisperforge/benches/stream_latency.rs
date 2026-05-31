@@ -17,9 +17,9 @@ use burn_flex::{Flex, FlexDevice};
 use clap::Parser;
 use tokenizers::Tokenizer;
 use whisperforge_core::{
-    Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, FakeMic, PromptContext, SileroVad,
-    Whisper, WindowConfig, compute_mel_from_samples, decode_window, ensure_silero_model,
-    stream_decode::DecodeContext,
+    Chunker, CommitDelta, Committer, EndpointConfig, Endpointer, FakeMic, PromptContext,
+    QualityGate, SileroVad, Whisper, WindowConfig, compute_mel_from_samples, decode_window,
+    ensure_silero_model, passes_quality_gate, stream_decode::DecodeContext,
 };
 
 #[derive(Parser, Debug)]
@@ -153,6 +153,15 @@ fn run_bench<B: Backend>(audio: &Path, models_dir: &Path, device: B::Device) -> 
         let emits = decode_window::<B>(&model, encoder_out, &ctx, &tokenizer, &device)
             .context("decode window")?;
         decode_ms.push(dec_start.elapsed().as_millis() as u64);
+
+        // Apply the same confidence gate as the live loop so total_window_ms reflects
+        // the real pipeline (the gate is a cheap post-decode check, included in the
+        // total-window timing below, not in decode_ms).
+        let emits = if !emits.is_empty() && !passes_quality_gate(&emits, &QualityGate::default()) {
+            Vec::new()
+        } else {
+            emits
+        };
 
         let (_commit_delta, _) = committer.ingest(emits);
 

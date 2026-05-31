@@ -211,6 +211,64 @@ fn log_softmax_at(logits: &[f32], token: u32) -> f32 {
     logits[idx] - log_sum
 }
 
+pub fn avg_logprob(tokens: &[TokenEmit]) -> f32 {
+    let content: Vec<f32> = tokens
+        .iter()
+        .filter(|t| !t.is_special)
+        .map(|t| t.logprob)
+        .collect();
+    if content.is_empty() {
+        return 0.0;
+    }
+    content.iter().sum::<f32>() / content.len() as f32
+}
+
+/// Per-window quality thresholds, mirroring faster-whisper's `log_prob_threshold`
+/// and `compression_ratio_threshold`. Used by the streaming caller to reject a decoded
+/// window before it reaches the LocalAgreement committer — LA-2 only rejects *unstable*
+/// output, so a *confident* hallucination loop (the `*sigh* *sigh* *sigh*` failure mode)
+/// would otherwise commit. The defaults match faster-whisper.
+#[derive(Clone, Copy, Debug)]
+pub struct QualityGate {
+    /// Reject the window when `avg_logprob` of content tokens is below this (default -1.0).
+    pub log_prob_threshold: f32,
+    /// Reject the window when the gzip compression ratio of its text exceeds this
+    /// (default 2.4) — high ratios signal a repetition/hallucination loop.
+    pub compression_ratio_threshold: f32,
+}
+
+impl Default for QualityGate {
+    fn default() -> Self {
+        Self {
+            log_prob_threshold: -1.0,
+            compression_ratio_threshold: 2.4,
+        }
+    }
+}
+
+/// Returns `false` when `emits` should be dropped as low-confidence or repetitive.
+///
+/// Windows with no content (regular) tokens always pass: the no-speech and
+/// punctuation-only gates in [`decode_window`] already handle empties, and the
+/// streaming committer ignores special/timestamp-only emits.
+pub fn passes_quality_gate(emits: &[TokenEmit], gate: &QualityGate) -> bool {
+    let text: String = emits
+        .iter()
+        .filter(|t| !t.is_special)
+        .map(|t| t.text.as_str())
+        .collect();
+    if text.trim().is_empty() {
+        return true;
+    }
+    if avg_logprob(emits) < gate.log_prob_threshold {
+        return false;
+    }
+    if crate::decoding::compression_ratio(&text) > gate.compression_ratio_threshold {
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +304,71 @@ mod tests {
             // Set very high so the no-speech gate never fires with random weights.
             no_speech_threshold: 0.999,
         }
+    }
+
+    fn content_emit(text: &str, logprob: f32) -> TokenEmit {
+        TokenEmit {
+            id: 1,
+            text: text.to_string(),
+            logprob,
+            window_ts_secs: None,
+            is_special: false,
+        }
+    }
+
+    #[test]
+    fn test_quality_gate_passes_normal() {
+        let gate = QualityGate::default();
+        let emits = vec![
+            content_emit(" the", -0.2),
+            content_emit(" quick", -0.4),
+            content_emit(" brown", -0.3),
+            content_emit(" fox", -0.5),
+        ];
+        assert!(
+            passes_quality_gate(&emits, &gate),
+            "varied, confident text should pass"
+        );
+    }
+
+    #[test]
+    fn test_quality_gate_rejects_low_logprob() {
+        let gate = QualityGate::default();
+        // avg_logprob well below the -1.0 floor; compression ratio is irrelevant here.
+        let emits = vec![content_emit(" maybe", -2.5), content_emit(" perhaps", -3.0)];
+        assert!(
+            !passes_quality_gate(&emits, &gate),
+            "low-confidence window should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_quality_gate_rejects_repetition() {
+        let gate = QualityGate::default();
+        // Confident (high logprob) but a repetition loop → high compression ratio.
+        let mut emits = Vec::new();
+        for _ in 0..60 {
+            emits.push(content_emit(" sigh", -0.1));
+        }
+        assert!(
+            !passes_quality_gate(&emits, &gate),
+            "confident repetition loop should be rejected on compression ratio"
+        );
+    }
+
+    #[test]
+    fn test_quality_gate_empty_passes() {
+        let gate = QualityGate::default();
+        // Specials-only / empty content → always passes (handled elsewhere).
+        let emits: Vec<TokenEmit> = vec![TokenEmit {
+            id: 50364,
+            text: String::new(),
+            logprob: -5.0,
+            window_ts_secs: Some(0.0),
+            is_special: true,
+        }];
+        assert!(passes_quality_gate(&emits, &gate));
+        assert!(passes_quality_gate(&[], &gate));
     }
 
     /// Structural test: verify `decode_window` compiles, runs, and returns Ok without panicking
