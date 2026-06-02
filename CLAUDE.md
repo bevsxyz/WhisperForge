@@ -44,7 +44,7 @@ cargo run --release -p whisperforge -- stream --model tiny.en \
 
 # Profile streaming per-window latency (p50/p99 for encoder/decode/total) → one JSON line.
 # Heavy config (28 s window, 128 tokens); see Phase F "Live-mic perf ceiling".
-cargo run --release -p whisperforge --bin stream_bench -- \
+cargo run --release -p whisperforge --example stream_bench -- \
   --audio test_data/LJ001-0001_16k.wav --device cpu
 
 # Build with native CUDA (requires CUDA toolkit + nvcc on host)
