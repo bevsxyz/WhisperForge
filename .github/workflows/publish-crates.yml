@@ -1,0 +1,67 @@
+name: Publish to crates.io
+
+# Publishes all four workspace crates to crates.io on a version tag, using
+# crates.io Trusted Publishing (OIDC) — no long-lived API token. The old token
+# was revoked; this exchanges a short-lived token at run time instead.
+#
+# One-time setup (per crate) on crates.io → crate Settings → Trusted Publishing:
+#   repository owner: bevsxyz, repo: WhisperForge,
+#   workflow filename: publish-crates.yml, environment: release
+# Configure it for: whisperforge-core, whisperforge-diarize,
+#                    whisperforge-align, whisperforge.
+#
+# Crates are published in dependency order; `cargo publish` waits for each to
+# appear in the index before returning, so the next crate's verify build resolves.
+
+on:
+  push:
+    tags:
+      # Workspace version tag emitted by `cargo release` (e.g. v0.5.0).
+      # Per-crate tags (whisperforge-core-v*, etc.) do not match and are ignored.
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions:
+  # Required to mint the crates.io OIDC token.
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    name: Publish workspace crates
+    runs-on: ubuntu-latest
+    # Must match the environment configured in each crate's Trusted Publishing entry.
+    environment: release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        # cpal (alsa) is needed by the `whisperforge` crate's publish-verify build.
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Install Rust toolchain
+        # rust-toolchain.toml pins the exact version; this ensures it's present.
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Authenticate to crates.io (OIDC)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          # Leaf libraries first, then dependents, then the binary crate.
+          for crate in \
+            whisperforge-core \
+            whisperforge-diarize \
+            whisperforge-align \
+            whisperforge; do
+            echo "::group::publish $crate"
+            # --locked: respect Cargo.lock. cargo waits for the registry index to
+            # update before exiting, so the next crate resolves the new version.
+            cargo publish --locked -p "$crate"
+            echo "::endgroup::"
+          done
