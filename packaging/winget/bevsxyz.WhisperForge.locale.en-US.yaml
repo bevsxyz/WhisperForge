@@ -1,0 +1,40 @@
+# This manifest is templated for submission to microsoft/winget-pkgs
+# Submission: fork microsoft/winget-pkgs, copy to manifests/b/bevsxyz/WhisperForge/0.5.0/,
+# then submit a PR or use komac/wingetcreate.
+
+PackageIdentifier: bevsxyz.WhisperForge
+PackageVersion: 0.5.0
+PackageLocale: en-US
+Publisher: bevsxyz
+PublisherUrl: https://github.com/bevsxyz
+PublisherSupportUrl: https://github.com/bevsxyz/WhisperForge/issues
+PackageName: WhisperForge
+PackageUrl: https://github.com/bevsxyz/WhisperForge
+License: MIT
+LicenseUrl: https://github.com/bevsxyz/WhisperForge/blob/main/LICENSE
+ShortDescription: "Fast GPU-accelerated speech-to-text CLI with streaming, quantization, speaker diarization, and multilingual support."
+Description: |
+  WhisperForge is a high-performance speech-to-text (ASR) CLI built on OpenAI's Whisper model.
+  It offers GPU acceleration via multiple backends (CPU, WGPU, CUDA), real-time streaming transcription,
+  INT8 quantization for 4× model size reduction, and multilingual support.
+
+  Key features:
+  - Streaming realtime ASR from microphone or file
+  - GPU acceleration (WGPU, CUDA) for 8–30× faster inference than CPU
+  - INT8 quantization reduces model size from 150 MB to 37 MB
+  - Multilingual and English-only models
+  - Speaker diarization
+  - Multiple output formats (JSON, SRT, WebVTT)
+Tags:
+  - speech-to-text
+  - asr
+  - whisper
+  - transcription
+  - streaming
+  - cuda
+  - gpu
+  - ml
+  - rust
+
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

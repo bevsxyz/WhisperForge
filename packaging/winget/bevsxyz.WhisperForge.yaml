@@ -1,0 +1,9 @@
+# This manifest is templated for submission to microsoft/winget-pkgs
+# Submission: fork microsoft/winget-pkgs, copy to manifests/b/bevsxyz/WhisperForge/0.5.0/,
+# then submit a PR or use komac/wingetcreate.
+
+PackageIdentifier: bevsxyz.WhisperForge
+PackageVersion: 0.5.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

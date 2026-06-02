@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>whisperforge</id>
+    <version>0.5.0</version>
+    <packageSourceUrl>https://github.com/bevsxyz/WhisperForge</packageSourceUrl>
+    <owners>bevsxyz</owners>
+    <authors>bevsxyz</authors>
+    <title>WhisperForge</title>
+    <projectUrl>https://github.com/bevsxyz/WhisperForge</projectUrl>
+    <licenseUrl>https://github.com/bevsxyz/WhisperForge/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <tags>whisper speech-to-text transcription gpu cli</tags>
+    <summary>Fast GPU-accelerated speech-to-text CLI with streaming support</summary>
+    <description>WhisperForge is a fast GPU-accelerated speech-to-text CLI with streaming, quantization, speaker diarization, and multilingual support. Built on Rust and Burn ML framework for high-performance inference.</description>
+    <releaseNotes>https://github.com/bevsxyz/WhisperForge/releases</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>
