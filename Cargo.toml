@@ -14,7 +14,38 @@ license = "MIT"
 repository = "https://github.com/bevsxyz/WhisperForge"
 homepage = "https://github.com/bevsxyz/WhisperForge"
 authors = ["bevsxyz"]
-rust-version = "1.85"
+rust-version = "1.95"
+
+# Config for 'dist'
+[workspace.metadata.dist]
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "npm", "homebrew", "msi"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# A GitHub repo to push Homebrew formulas to
+tap = "bevsxyz/homebrew-tap"
+# Auto-publish Homebrew formula to bevsxyz/homebrew-tap and npm package on each release.
+# Requires HOMEBREW_TAP_TOKEN (fine-grained PAT: Contents write on homebrew-tap) and
+# NPM_TOKEN (Granular Access Token: read+write on whisperforge) secrets in this repo.
+publish-jobs = ["homebrew", "npm"]
+# Features to pass to cargo build
+features = ["gpu"]
+# Checksums to generate for each App
+checksum = "sha256"
+# Whether to install an updater program
+install-updater = false
+# Extra static files to include in each App (path relative to this Cargo.toml's dir)
+include = ["packaging/shims/wf", "packaging/shims/wf.cmd"]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+
+# cpal/alsa needs ALSA headers on the Linux build runner.
+[workspace.metadata.dist.dependencies.apt]
+libasound2-dev = "*"
 
 [workspace.dependencies]
 # Core ML framework
@@ -65,3 +96,8 @@ panic = "abort"
 [profile.bench]
 opt-level = 3
 debug = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

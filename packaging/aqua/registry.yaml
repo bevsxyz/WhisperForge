@@ -1,0 +1,57 @@
+# aqua registry entry for WhisperForge
+#
+# This file is templated for aqua-registry (https://github.com/aquaproj/aqua-registry).
+# It should be submitted as a PR to aquaproj/aqua-registry under pkgs/bevsxyz/WhisperForge/registry.yaml.
+#
+# Once merged, users can install via:
+#   aqua install bevsxyz/WhisperForge
+#   mise use bevsxyz/WhisperForge@latest
+#   ubi install bevsxyz/WhisperForge
+#   eget bevsxyz/WhisperForge
+
+packages:
+  - name: whisperforge
+    description: "Fast GPU-accelerated speech-to-text CLI with streaming, quantization, speaker diarization, and multilingual support."
+    repo_owner: bevsxyz
+    repo_name: WhisperForge
+    type: github_release
+
+    # Asset template using aqua's rosetta2 conventions
+    # Placeholders: {{.OS}} (darwin/linux/windows), {{.Arch}} (amd64/arm64)
+    #
+    # Platform mappings:
+    # - OS: darwin (macOS), linux, windows
+    # - Arch: amd64 (x86_64), arm64 (aarch64)
+    #
+    # cargo-dist asset naming: {name}-{target}.{ext}
+    # Examples:
+    #   - whisperforge-x86_64-unknown-linux-gnu.tar.xz
+    #   - whisperforge-aarch64-apple-darwin.tar.xz
+    #   - whisperforge-x86_64-pc-windows-msvc.zip
+    asset: "whisperforge-{{.Arch}}-{{.OS}}.{{.Format}}"
+
+    format: tar.xz
+
+    # Override asset format and naming for Windows (zip instead of tar.xz)
+    overrides:
+      - goos: windows
+        goarch: amd64
+        format: zip
+        asset: "whisperforge-x86_64-pc-windows-msvc.zip"
+
+    # Rosetta2 replacements: map OS/Arch to Rust target triples
+    replacements:
+      darwin: apple-darwin
+      linux: unknown-linux-gnu
+      amd64: x86_64
+      arm64: aarch64
+
+    # Binary entry point
+    files:
+      - name: wforge
+
+    # SHA256 checksum verification
+    checksum:
+      type: github_release
+      asset: "{{.Asset}}.sha256"
+      algorithm: sha256

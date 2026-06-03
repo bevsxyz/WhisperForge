@@ -1,6 +1,9 @@
-[build]
-rustc-wrapper = "sccache"
-
-# mold is Linux-only; scoped to the x86_64 Linux target so macOS/Windows are unaffected.
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+# Build accelerators (sccache wrapper, mold linker) are intentionally NOT committed
+# here. A committed `rustc-wrapper`/linker would apply to every cargo invocation —
+# including dist's release runners (no sccache/mold installed) and fresh clones —
+# and would also pin the linux release build's glibc. Instead they're provisioned
+# per-environment, where the tools are guaranteed present:
+#   - CI: .github/workflows/ci.yml sets RUSTC_WRAPPER=sccache and the mold linker
+#   - local dev: mise.toml `[env]` sets RUSTC_WRAPPER=sccache (sccache via `[tools]`)
+# Release builds (dist) deliberately use the stock toolchain on ubuntu-22.04 for
+# broad glibc compatibility.

@@ -15,11 +15,19 @@ autobins = false
 autobenches = false
 default-run = "wforge"
 
+[package.metadata.wix]
+upgrade-guid = "D47087C4-7AF7-4DC5-8847-30F2E3E20968"
+path-guid = "6DD099AE-AAC4-45F0-B664-2E6A99A67551"
+license = false
+eula = false
+
 [[bin]]
 name = "wforge"
 path = "src/main.rs"
 
-[[bin]]
+# Dev-only profiling tool. Declared as an example (not a [[bin]]) so dist never
+# ships it in release archives. Run with: cargo run --release --example stream_bench
+[[example]]
 name = "stream_bench"
 path = "benches/stream_latency.rs"
 

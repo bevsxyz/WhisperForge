@@ -1,0 +1,20 @@
+# This manifest is templated for submission to microsoft/winget-pkgs
+# Submission: fork microsoft/winget-pkgs, copy to manifests/b/bevsxyz/WhisperForge/0.5.0/,
+# fill in <SHA256_FILLED_AT_RELEASE>, then submit a PR or use komac/wingetcreate.
+
+PackageIdentifier: bevsxyz.WhisperForge
+PackageVersion: 0.5.0
+InstallerType: zip
+InstallerLocale: en-US
+
+Installers:
+  - Architecture: x64
+    Url: https://github.com/bevsxyz/WhisperForge/releases/download/v0.5.0/whisperforge-x86_64-pc-windows-msvc.zip
+    InstallerSha256: <SHA256_FILLED_AT_RELEASE>
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: wforge.exe
+        PortableCommandAlias: wforge
+
+ManifestType: installer
+ManifestVersion: 1.6.0

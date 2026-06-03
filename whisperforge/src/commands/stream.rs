@@ -541,15 +541,15 @@ fn run_stream<B: Backend>(
 
         let (commit_delta, tentative_delta) = committer.ingest(emits);
 
-        if let CommitDelta::Committed { ref new_text, .. } = commit_delta {
-            if !new_text.is_empty() {
-                if !utterance_started {
-                    utterance_start_secs = window.window_start_secs;
-                    utterance_started = true;
-                }
-                utterance_committed.push_str(new_text);
-                sink.on_commit(new_text, window.window_start_secs)?;
+        if let CommitDelta::Committed { ref new_text, .. } = commit_delta
+            && !new_text.is_empty()
+        {
+            if !utterance_started {
+                utterance_start_secs = window.window_start_secs;
+                utterance_started = true;
             }
+            utterance_committed.push_str(new_text);
+            sink.on_commit(new_text, window.window_start_secs)?;
         }
 
         let tentative_text = match &tentative_delta {
@@ -562,10 +562,10 @@ fn run_stream<B: Backend>(
         let endpoint_fires = endpointer.step(&window, committer.committed_text());
         if endpoint_fires || window.forced_eou {
             let final_delta = committer.finalize_utterance();
-            if let CommitDelta::Committed { ref new_text, .. } = final_delta {
-                if !new_text.is_empty() {
-                    utterance_committed.push_str(new_text);
-                }
+            if let CommitDelta::Committed { ref new_text, .. } = final_delta
+                && !new_text.is_empty()
+            {
+                utterance_committed.push_str(new_text);
             }
 
             if !utterance_committed.is_empty() {
@@ -611,11 +611,11 @@ fn run_stream<B: Backend>(
 
             if trimmed > 0 {
                 let trim_delta = committer.on_trim();
-                if let CommitDelta::Committed { ref new_text, .. } = trim_delta {
-                    if !new_text.is_empty() {
-                        utterance_committed.push_str(new_text);
-                        sink.on_commit(new_text, window.window_start_secs)?;
-                    }
+                if let CommitDelta::Committed { ref new_text, .. } = trim_delta
+                    && !new_text.is_empty()
+                {
+                    utterance_committed.push_str(new_text);
+                    sink.on_commit(new_text, window.window_start_secs)?;
                 }
                 tracing::debug!(trimmed_samples = trimmed, "cap-hit trim applied");
             } else {
@@ -629,10 +629,10 @@ fn run_stream<B: Backend>(
 
     // Finalize any pending partial utterance on shutdown.
     let final_delta = committer.finalize_utterance();
-    if let CommitDelta::Committed { ref new_text, .. } = final_delta {
-        if !new_text.is_empty() {
-            utterance_committed.push_str(new_text);
-        }
+    if let CommitDelta::Committed { ref new_text, .. } = final_delta
+        && !new_text.is_empty()
+    {
+        utterance_committed.push_str(new_text);
     }
     if !utterance_committed.is_empty() {
         let end_secs = chunker.total_samples_seen as f32 / 16_000.0;

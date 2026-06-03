@@ -246,10 +246,10 @@ fn transcribe(
     // first position regardless of temperature.  Without this, at temperature < 1.0
     // the distribution is more peaked at EOT, quality passes immediately, and the
     // fallback returns an empty sequence.
-    if let Some(first) = all_logits.first_mut() {
-        if (eot as usize) < first.len() {
-            first[eot as usize] = f32::NEG_INFINITY;
-        }
+    if let Some(first) = all_logits.first_mut()
+        && (eot as usize) < first.len()
+    {
+        first[eot as usize] = f32::NEG_INFINITY;
     }
 
     let tokens = decoder.decode_with_fallback(

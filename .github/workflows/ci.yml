@@ -30,8 +30,13 @@ jobs:
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
-      - name: Set RUSTC_WRAPPER
-        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+      - name: Configure build accelerators (sccache + mold)
+        # Set here rather than in .cargo/config.toml so bare environments (dist
+        # release runners, fresh clones) build with a stock toolchain. ubuntu-latest
+        # ships gcc >= 12, which supports -fuse-ld=mold.
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-Clink-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
 
       - name: Cache Cargo registry and build
         uses: actions/cache@v4

@@ -224,21 +224,21 @@ fn transcribe_chunk<B: Backend>(
             break;
         }
 
-        if greedy_next < 50257 {
-            if let Ok(word) = tokenizer.decode(&[greedy_next], false) {
-                print!("{word}");
-                std::io::stdout().flush().ok();
-            }
+        if greedy_next < 50257
+            && let Ok(word) = tokenizer.decode(&[greedy_next], false)
+        {
+            print!("{word}");
+            std::io::stdout().flush().ok();
         }
 
         step_logits = forward_decoder_cached(model, greedy_next, &mut cache, device)
             .context("kv-cache decode step")?;
     }
 
-    if let Some(first) = all_logits.first_mut() {
-        if (eot as usize) < first.len() {
-            first[eot as usize] = f32::NEG_INFINITY;
-        }
+    if let Some(first) = all_logits.first_mut()
+        && (eot as usize) < first.len()
+    {
+        first[eot as usize] = f32::NEG_INFINITY;
     }
 
     let tokens = decoder.decode_with_fallback(

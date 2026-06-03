@@ -1,0 +1,31 @@
+# Maintainer: Bevan Stanely <bevan.stanely@accenture.com>
+pkgname=whisperforge-git
+pkgver=0.5.0.r0.gHEAD
+pkgrel=1
+pkgdesc="Fast GPU-accelerated speech-to-text CLI with streaming, quantization, speaker diarization, and multilingual support"
+arch=('x86_64' 'aarch64')
+url="https://github.com/bevsxyz/WhisperForge"
+license=('MIT')
+makedepends=('git' 'cargo' 'rust')
+depends=('alsa-lib' 'gcc-libs')
+provides=('whisperforge')
+conflicts=('whisperforge')
+source=("$pkgname::git+https://github.com/bevsxyz/WhisperForge.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/$pkgname"
+  git describe --long --tags | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+  cargo build --release --locked -p whisperforge --features gpu
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+  install -Dm755 target/release/wforge "$pkgdir/usr/bin/wforge"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

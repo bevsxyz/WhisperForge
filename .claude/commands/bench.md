@@ -9,7 +9,7 @@ Report per-utterance WER and average. Baseline is 0.8% on tiny.en — flag any r
 For streaming **latency** (not WER), profile per-window p50/p99 for the encoder/decode/total stages:
 
 ```bash
-cargo run --release -p whisperforge --bin stream_bench -- \
+cargo run --release -p whisperforge --example stream_bench -- \
   --audio test_data/LJ001-0001_16k.wav --device cpu
 ```
 

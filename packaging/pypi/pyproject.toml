@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=65.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whisperforge"
+version = "0.5.0"
+description = "Fast GPU-accelerated speech-to-text CLI with streaming, quantization, speaker diarization, and multilingual support."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+authors = [
+    { name = "bevsxyz", email = "bevan.stanely@accenture.com" }
+]
+
+[project.urls]
+Homepage = "https://github.com/bevsxyz/WhisperForge"
+Repository = "https://github.com/bevsxyz/WhisperForge"
+
+[project.scripts]
+# This wrapper downloads the prebuilt wforge binary for your platform on first run
+# and forwards all arguments to it. No native compilation required.
+wforge = "whisperforge_wrapper.__main__:main"

@@ -633,10 +633,10 @@ impl PromptContext {
 
         self.current_prompt.clear();
         // Only emit <|prevtext|> when there are actual text tokens to accompany it.
-        if let Some(prevtext) = self.prevtext_token_id {
-            if !tail.is_empty() {
-                self.current_prompt.push(prevtext);
-            }
+        if let Some(prevtext) = self.prevtext_token_id
+            && !tail.is_empty()
+        {
+            self.current_prompt.push(prevtext);
         }
         self.current_prompt.extend_from_slice(tail);
     }

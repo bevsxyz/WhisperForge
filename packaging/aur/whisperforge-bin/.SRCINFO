@@ -1,0 +1,17 @@
+pkgbase = whisperforge-bin
+	pkgver = 0.5.0
+	pkgrel = 1
+	pkgdesc = Fast GPU-accelerated speech-to-text CLI with streaming, quantization, speaker diarization, and multilingual support
+	url = https://github.com/bevsxyz/WhisperForge
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	depends = alsa-lib
+	depends = gcc-libs
+	provides = whisperforge
+	conflicts = whisperforge
+	source_x86_64 = whisperforge-x86_64-unknown-linux-gnu.tar.xz::https://github.com/bevsxyz/WhisperForge/releases/download/v0.5.0/whisperforge-x86_64-unknown-linux-gnu.tar.xz
+	source_aarch64 = whisperforge-aarch64-unknown-linux-gnu.tar.xz::https://github.com/bevsxyz/WhisperForge/releases/download/v0.5.0/whisperforge-aarch64-unknown-linux-gnu.tar.xz
+	sha256sums_x86_64 = SKIP
+	sha256sums_aarch64 = SKIP
+pkgname = whisperforge-bin
