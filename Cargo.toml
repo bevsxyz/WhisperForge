@@ -25,7 +25,7 @@ installers = ["shell", "powershell", "npm", "homebrew", "msi"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # A GitHub repo to push Homebrew formulas to
-tap = "bevsxyz/homebrew-whisperforge"
+tap = "bevsxyz/homebrew-tap"
 # Publish jobs are intentionally NOT enabled yet: the Homebrew formula (.rb) and npm
 # package are generated as release assets, but auto-publishing to the tap/npm is part of
 # the post-0.5.0 rollout (0.5.0 ships crates.io + GitHub binaries only). To go live, add:

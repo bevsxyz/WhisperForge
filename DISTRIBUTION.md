@@ -64,7 +64,7 @@ Environments). No secret needed — auth is OIDC.
 ### New repos to create
 | Repo | Why |
 |------|-----|
-| `bevsxyz/homebrew-whisperforge` | Homebrew tap; dist auto-pushes `whisperforge.rb` here. Install: `brew install bevsxyz/whisperforge/whisperforge` |
+| `bevsxyz/homebrew-tap` | Generic personal Homebrew tap; dist auto-pushes `whisperforge.rb` here. Future tools can publish here too. Install: `brew install bevsxyz/tap/whisperforge` |
 | `bevsxyz/scoop-bucket` | Scoop bucket; copy [`bucket/whisperforge.json`](bucket/whisperforge.json) into its `bucket/`. Install: `scoop bucket add whisperforge https://github.com/bevsxyz/scoop-bucket; scoop install whisperforge` |
 
 ### Per-channel accounts
