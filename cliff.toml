@@ -30,11 +30,13 @@ commit_parsers = [
     { message = "^docs", group = "Documentation" },
     { message = "^refactor", group = "Changed" },
     { message = "^perf", group = "Performance" },
+    { message = "^build", group = "Build" },
     { message = "^ci",    skip = true },
     { message = "^chore", skip = true },
     { message = "^style", skip = true },
     { message = "^test",  skip = true },
+    { message = "^[Mm]erge", skip = true },
 ]
 filter_commits = false
-tag_pattern = "v[0-9]*"
+tag_pattern = "whisperforge-v[0-9]*"
 sort_commits = "oldest"
