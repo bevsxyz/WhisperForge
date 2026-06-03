@@ -159,19 +159,19 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
         };
 
         let (commit_delta, _tentative) = committer.ingest(emits);
-        if let CommitDelta::Committed { ref new_text, .. } = commit_delta {
-            if !new_text.is_empty() {
-                committed_text.push_str(new_text);
-                eprintln!("committed: {new_text}");
-            }
+        if let CommitDelta::Committed { ref new_text, .. } = commit_delta
+            && !new_text.is_empty()
+        {
+            committed_text.push_str(new_text);
+            eprintln!("committed: {new_text}");
         }
 
         if endpointer.step(&window, committer.committed_text()) || window.forced_eou {
             let final_delta = committer.finalize_utterance();
-            if let CommitDelta::Committed { ref new_text, .. } = final_delta {
-                if !new_text.is_empty() {
-                    committed_text.push_str(new_text);
-                }
+            if let CommitDelta::Committed { ref new_text, .. } = final_delta
+                && !new_text.is_empty()
+            {
+                committed_text.push_str(new_text);
             }
             endpoint_fired_mid_stream = true;
             prompt_ctx.update_after_eou(committer.committed_tokens(), 128);
@@ -182,10 +182,10 @@ fn test_stream_pipeline_on_ljspeech() -> Result<()> {
 
     // Finalize any remaining partial.
     let final_delta = committer.finalize_utterance();
-    if let CommitDelta::Committed { ref new_text, .. } = final_delta {
-        if !new_text.is_empty() {
-            committed_text.push_str(new_text);
-        }
+    if let CommitDelta::Committed { ref new_text, .. } = final_delta
+        && !new_text.is_empty()
+    {
+        committed_text.push_str(new_text);
     }
 
     eprintln!("Full committed transcript: {committed_text}");
@@ -358,20 +358,20 @@ fn test_stream_pipeline_long_form_trim() -> Result<()> {
         };
 
         let (commit_delta, _tentative) = committer.ingest(emits);
-        if let CommitDelta::Committed { ref new_text, .. } = commit_delta {
-            if !new_text.is_empty() {
-                committed_text.push_str(new_text);
-                eprintln!("committed: {new_text}");
-            }
+        if let CommitDelta::Committed { ref new_text, .. } = commit_delta
+            && !new_text.is_empty()
+        {
+            committed_text.push_str(new_text);
+            eprintln!("committed: {new_text}");
         }
 
         let endpoint_fires = endpointer.step(&window, committer.committed_text());
         if endpoint_fires || window.forced_eou {
             let final_delta = committer.finalize_utterance();
-            if let CommitDelta::Committed { ref new_text, .. } = final_delta {
-                if !new_text.is_empty() {
-                    committed_text.push_str(new_text);
-                }
+            if let CommitDelta::Committed { ref new_text, .. } = final_delta
+                && !new_text.is_empty()
+            {
+                committed_text.push_str(new_text);
             }
             endpoint_count += 1;
             prompt_ctx.update_after_eou(committer.committed_tokens(), 128);
@@ -392,11 +392,11 @@ fn test_stream_pipeline_long_form_trim() -> Result<()> {
             };
             if trimmed > 0 {
                 let trim_delta = committer.on_trim();
-                if let CommitDelta::Committed { ref new_text, .. } = trim_delta {
-                    if !new_text.is_empty() {
-                        committed_text.push_str(new_text);
-                        eprintln!("trim-commit: {new_text}");
-                    }
+                if let CommitDelta::Committed { ref new_text, .. } = trim_delta
+                    && !new_text.is_empty()
+                {
+                    committed_text.push_str(new_text);
+                    eprintln!("trim-commit: {new_text}");
                 }
                 trim_count += 1;
                 eprintln!("cap-hit trim: trimmed={trimmed} samples");
@@ -405,10 +405,10 @@ fn test_stream_pipeline_long_form_trim() -> Result<()> {
     }
 
     let final_delta = committer.finalize_utterance();
-    if let CommitDelta::Committed { ref new_text, .. } = final_delta {
-        if !new_text.is_empty() {
-            committed_text.push_str(new_text);
-        }
+    if let CommitDelta::Committed { ref new_text, .. } = final_delta
+        && !new_text.is_empty()
+    {
+        committed_text.push_str(new_text);
     }
 
     eprintln!("Long-form committed transcript: {committed_text}");

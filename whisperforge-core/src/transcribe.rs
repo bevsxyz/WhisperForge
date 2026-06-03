@@ -113,10 +113,10 @@ impl<B: Backend> WhisperInference<B> for WhisperTranscriber<B> {
             context.push(greedy_next);
         }
 
-        if let Some(first) = all_logits.first_mut() {
-            if (eot as usize) < first.len() {
-                first[eot as usize] = f32::NEG_INFINITY;
-            }
+        if let Some(first) = all_logits.first_mut()
+            && (eot as usize) < first.len()
+        {
+            first[eot as usize] = f32::NEG_INFINITY;
         }
 
         let tokens = decoder.decode_with_fallback(
@@ -257,10 +257,10 @@ impl<B: Backend> WhisperInference<B> for WhisperTranscriber<B> {
             context.push(greedy_next);
         }
 
-        if let Some(first) = all_logits.first_mut() {
-            if (eot as usize) < first.len() {
-                first[eot as usize] = f32::NEG_INFINITY;
-            }
+        if let Some(first) = all_logits.first_mut()
+            && (eot as usize) < first.len()
+        {
+            first[eot as usize] = f32::NEG_INFINITY;
         }
 
         let tokens = decoder.decode_with_fallback(

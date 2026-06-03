@@ -184,10 +184,10 @@ impl<B: Backend> BatchedTranscriber<B> {
                         .context("kv-cache decode step")?;
             }
 
-            if let Some(first) = all_logits.first_mut() {
-                if (eot as usize) < first.len() {
-                    first[eot as usize] = f32::NEG_INFINITY;
-                }
+            if let Some(first) = all_logits.first_mut()
+                && (eot as usize) < first.len()
+            {
+                first[eot as usize] = f32::NEG_INFINITY;
             }
 
             let decoder = HybridDecoder::new(self.config.clone());

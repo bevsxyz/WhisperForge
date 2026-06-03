@@ -533,7 +533,7 @@ pub struct MultiHeadSelfAttentionConfig {
 impl MultiHeadSelfAttentionConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> MultiHeadSelfAttention<B> {
         assert!(
-            self.n_state % self.n_head == 0,
+            self.n_state.is_multiple_of(self.n_head),
             "State size {} must be a multiple of head size {}",
             self.n_state,
             self.n_head
@@ -587,7 +587,7 @@ pub struct MultiHeadCrossAttentionConfig {
 impl MultiHeadCrossAttentionConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> MultiHeadCrossAttention<B> {
         assert!(
-            self.n_state % self.n_head == 0,
+            self.n_state.is_multiple_of(self.n_head),
             "State size {} must be a multiple of head size {}",
             self.n_state,
             self.n_head
