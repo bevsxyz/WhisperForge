@@ -58,14 +58,14 @@ Environments). No secret needed — auth is OIDC.
 ### GitHub repo secrets (Settings → Secrets and variables → Actions)
 | Secret | Used by | Purpose |
 |--------|---------|---------|
-| `HOMEBREW_TAP_TOKEN` | `release.yml` | PAT (repo scope) with write access to the tap repo, so dist can push the formula |
-| `NPM_TOKEN` | `release.yml` | npm automation token to publish the npm package (npm OIDC is a future option) |
+| `HOMEBREW_TAP_TOKEN` | `release.yml` | **Fine-grained PAT** scoped to `bevsxyz/homebrew-tap` only. Permissions: **Contents → Read and write**, Metadata → Read (auto-included). No other scopes needed. |
+| `NPM_TOKEN` | `release.yml` | **Granular Access Token** from npmjs.com → Account Settings → Access Tokens → Generate New Token → Granular. Set Packages and scopes: **Read and write**; restrict to package `whisperforge`. (npm has no passwordless OIDC equivalent to crates.io/PyPI — a scoped automation token is the closest.) |
 
-### New repos to create
-| Repo | Why |
-|------|-----|
-| `bevsxyz/homebrew-tap` | Generic personal Homebrew tap; dist auto-pushes `whisperforge.rb` here. Future tools can publish here too. Install: `brew install bevsxyz/tap/whisperforge` |
-| `bevsxyz/scoop-bucket` | Scoop bucket; copy [`bucket/whisperforge.json`](bucket/whisperforge.json) into its `bucket/`. Install: `scoop bucket add whisperforge https://github.com/bevsxyz/scoop-bucket; scoop install whisperforge` |
+### Repos (already created ✅)
+| Repo | Status | Notes |
+|------|--------|-------|
+| `bevsxyz/homebrew-tap` | ✅ created | Generic personal tap — future tools publish here too. dist auto-pushes `whisperforge.rb`. Install: `brew install bevsxyz/tap/whisperforge` |
+| `bevsxyz/scoop-bucket` | ✅ created | Copy [`bucket/whisperforge.json`](bucket/whisperforge.json) into its `bucket/` dir. Install: `scoop bucket add bevsxyz https://github.com/bevsxyz/scoop-bucket; scoop install whisperforge` |
 
 ### Per-channel accounts
 | Channel | Account / action |
@@ -98,12 +98,12 @@ from the dist-emitted `<asset>.sha256` files (the marker is `<SHA256_FILLED_AT_R
 
 | Channel | Mechanism | Scaffolded | Live after |
 |---------|-----------|:---------:|------------|
-| crates.io | `publish-crates.yml` (OIDC) | ✅ | trusted publishers configured |
+| crates.io | `publish-crates.yml` (OIDC) | ✅ | ✅ trusted publishers configured; needs `release` env + first tag |
 | GitHub Release + installers | dist `release.yml` | ✅ | first `v*` tag |
 | cargo-binstall | dist metadata | ✅ | first release (verify `cargo binstall whisperforge`) |
-| Homebrew | dist → tap | ✅ | tap repo + `HOMEBREW_TAP_TOKEN` |
-| npm (wrapper) | dist npm installer | ✅ | `NPM_TOKEN` |
-| Scoop | [`bucket/whisperforge.json`](bucket/whisperforge.json) | ✅ | bucket repo |
+| Homebrew | dist → `bevsxyz/homebrew-tap` | ✅ | ✅ tap repo created; add `HOMEBREW_TAP_TOKEN` secret |
+| npm (wrapper) | dist npm installer | ✅ | add `NPM_TOKEN` secret (Granular, read+write on `whisperforge`) |
+| Scoop | [`bucket/whisperforge.json`](bucket/whisperforge.json) | ✅ | ✅ bucket repo created; copy manifest into `bucket/` |
 | AUR (`-bin`, `-git`) | [packaging/aur/](packaging/aur/) | ✅ | AUR account + push |
 | aqua (→ mise/ubi/eget) | [packaging/aqua/](packaging/aqua/) | ✅ | aqua-registry PR |
 | pip (wrapper) | [packaging/pypi/](packaging/pypi/) | ✅ | PyPI trusted publisher + publish workflow |
