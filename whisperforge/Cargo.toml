@@ -32,9 +32,9 @@ name = "stream_bench"
 path = "benches/stream_latency.rs"
 
 [dependencies]
-whisperforge-core = { path = "../whisperforge-core", version = "0.4" }
-whisperforge-align = { path = "../whisperforge-align", version = "0.4" }
-whisperforge-diarize = { path = "../whisperforge-diarize", version = "0.4" }
+whisperforge-core = { path = "../whisperforge-core", version = "0.5" }
+whisperforge-align = { path = "../whisperforge-align", version = "0.5" }
+whisperforge-diarize = { path = "../whisperforge-diarize", version = "0.5" }
 clap = { workspace = true, features = ["derive", "env"] }
 clap_complete = "4.4"
 anyhow = { workspace = true }
