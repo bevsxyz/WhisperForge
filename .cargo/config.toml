@@ -8,9 +8,19 @@
 # Release builds (dist) deliberately use the stock toolchain on ubuntu-22.04 for
 # broad glibc compatibility.
 
-# ORT pre-built static library (ort 2.0.0-rc.10, download-binaries) references
-# old-MSVCRT symbols (__dstbias, __timezone, __tzname) that live only in
-# legacy_stdio_definitions.lib — Microsoft's backward-compat shim for pre-VS2015
-# CRT references, absent from ucrt.lib/msvcrt.lib/vcruntime.lib.
+# ONNX Runtime (ort 2.0.0-rc.10, download-binaries) links the CRT *dynamically*
+# (/MD) and references __imp_* import stubs. `libsqlite3-sys` (bundled sqlite, via
+# burn's default dataset feature) compiles its C with the *static* CRT (/MT), which
+# drags libcmt/libucrt into the link and leaves ONNX's __imp_* unresolved (pykeio/ort
+# #329). Force the whole link onto the dynamic CRT so ucrt.lib/msvcrt.lib supply the
+# __imp_* stubs. The static-CRT C code (sqlite datasets) is never called at runtime,
+# so CRT-mixing has no runtime effect — only the link must be consistent.
+# NOTE: do not set the RUSTFLAGS env var on the Windows build (it overrides these
+# target rustflags); see ci.yml windows-link-check.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=legacy_stdio_definitions.lib"]
+rustflags = [
+    "-C", "link-arg=/NODEFAULTLIB:libcmt.lib",
+    "-C", "link-arg=/NODEFAULTLIB:libucrt.lib",
+    "-C", "link-arg=/DEFAULTLIB:msvcrt.lib",
+    "-C", "link-arg=/DEFAULTLIB:ucrt.lib",
+]
