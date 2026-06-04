@@ -27,16 +27,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev mold
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Configure build accelerators (sccache + mold)
-        # Set here rather than in .cargo/config.toml so bare environments (dist
-        # release runners, fresh clones) build with a stock toolchain. ubuntu-latest
-        # ships gcc >= 12, which supports -fuse-ld=mold.
-        run: |
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=-Clink-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
+      - name: Configure mold linker
+        # Set here rather than in .cargo/config.toml so dist release runners
+        # and fresh clones build with a stock toolchain. ubuntu-latest ships
+        # gcc >= 12, which supports -fuse-ld=mold.
+        run: echo "RUSTFLAGS=-Clink-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
 
       - name: Cache Cargo registry and build
         uses: actions/cache@v4

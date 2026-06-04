@@ -5,13 +5,6 @@ rust = "1.95.0"
 "aqua:git-cliff" = "latest"
 "cargo:cargo-release" = "latest"
 "aqua:mold" = "latest"
-"aqua:sccache" = "latest"
-
-[env]
-# Use sccache for local builds (provided by `[tools]` above). Kept out of the
-# committed .cargo/config.toml so bare environments (dist release runners, fresh
-# clones without mise) don't require sccache to build.
-RUSTC_WRAPPER = "sccache"
 
 [tasks.pre-commit]
 description = "Pre-commit checks: fmt"
