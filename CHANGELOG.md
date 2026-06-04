@@ -7,6 +7,8 @@ All workspace crates are versioned together.
 
 ---
 
+## [0.5.4] — 2026-06-04
+
 ## [0.5.3] — 2026-06-04
 
 ## [0.5.2] — 2026-06-03
