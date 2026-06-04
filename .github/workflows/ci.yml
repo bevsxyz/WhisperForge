@@ -53,3 +53,34 @@ jobs:
 
       - name: Test
         run: cargo test --release --locked -p whisperforge-core -p whisperforge
+
+  windows-link-check:
+    name: Windows MSVC link check
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # NOTE: deliberately do NOT set RUSTFLAGS here — it would override the
+      # .cargo/config.toml [target.x86_64-pc-windows-msvc] rustflags this job exists
+      # to validate. (The `check` job sets RUSTFLAGS=mold, which is why this is separate.)
+      - name: Build wforge (dist profile, gpu) — link only
+        run: cargo build --profile dist --features gpu -p whisperforge --target x86_64-pc-windows-msvc --locked

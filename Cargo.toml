@@ -58,8 +58,13 @@ rustfft = "6.2"
 cpal = "0.15"
 ringbuf = "0.4"
 
-# Text processing
-tokenizers = "0.23"
+# Text processing.
+# default-features disabled to drop the `esaxx_fast` feature, which pulls esaxx-rs —
+# a C++ build-dep that hardcodes `.static_crt(true)`, forcing the static CRT (/MT) and
+# breaking the Windows MSVC link against ONNX Runtime's dynamic-CRT (/MD) prebuilt lib
+# (see .cargo/config.toml and pykeio/ort #329). esaxx_fast is training-only; we only
+# load + decode. `onig` keeps the same regex backend as the default → zero behavior change.
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 
 # Serialization and CLI
 serde = { version = "1.0", features = ["derive"] }
