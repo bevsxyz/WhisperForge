@@ -10,17 +10,17 @@ echo "=== [1/2] Compile"
 # Default (GPU) variant — mirrors what Linux/macOS release build uses
 cargo build --release -p whisperforge --features gpu
 
-# CPU-only variant — mirrors Windows release build; catches --no-default-features regressions
+# CPU-only variant — catches --no-default-features regressions
 cargo build --release -p whisperforge --no-default-features
 
 # ── 2. Smoke tests ────────────────────────────────────────────────────────────
 echo "=== [2/2] Smoke tests"
-BIN="./target/release/wf"
+BIN="./target/release/wforge"
 
 "$BIN" --help > /dev/null
 "$BIN" transcribe --help > /dev/null
-"$BIN" convert --help > /dev/null
-"$BIN" list-models --help > /dev/null
+"$BIN" pull --help > /dev/null
+"$BIN" list --help > /dev/null
 
 CARGO_VER=$(grep '^version' Cargo.toml | head -1 | grep -oP '"\K[^"]+')
 BIN_VER=$("$BIN" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
@@ -30,19 +30,19 @@ BIN_VER=$("$BIN" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
 }
 
 # Missing audio → must exit nonzero
-"$BIN" transcribe -a /no_such_audio_file_9999.wav -m tiny_en_converted && {
+"$BIN" transcribe /no_such_audio_file_9999.wav -m tiny.en && {
     echo "FAIL: missing audio was accepted (expected nonzero exit)"
     exit 1
 } || true
 
 # Missing model → must exit nonzero with friendly error
-"$BIN" transcribe -a /dev/null -m no_such_model_xyz && {
+"$BIN" transcribe /dev/null -m no_such_model_xyz && {
     echo "FAIL: missing model was accepted (expected nonzero exit)"
     exit 1
 } || true
 
 # --device cuda → must exit nonzero (feature not compiled in by default)
-"$BIN" transcribe -a /dev/null -m no_model --device cuda && {
+"$BIN" transcribe /dev/null -m no_model --device cuda && {
     echo "FAIL: --device cuda was accepted without the cuda feature (expected nonzero exit)"
     exit 1
 } || true
