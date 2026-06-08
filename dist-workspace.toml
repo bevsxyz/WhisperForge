@@ -1,0 +1,33 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "npm", "homebrew", "msi"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# A GitHub repo to push Homebrew formulas to
+tap = "bevsxyz/homebrew-tap"
+# Publish jobs to run in CI
+publish-jobs = ["homebrew", "npm"]
+# Features to pass to cargo build
+features = ["gpu"]
+# Checksums to generate for each App
+checksum = "sha256"
+# Whether to install an updater program
+install-updater = false
+# Extra static files to include in each App (path relative to this Cargo.toml's dir)
+include = ["packaging/shims/wf", "packaging/shims/wf.cmd"]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether +crt-static should be used on msvc
+msvc-crt-static = false
+
+# cpal/alsa needs ALSA headers on the Linux build runner.
+[dist.dependencies.apt]
+libasound2-dev = "*"

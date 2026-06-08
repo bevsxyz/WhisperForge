@@ -2,9 +2,10 @@
 python = "latest"
 uv = "latest"
 rust = "1.95.0"
-"aqua:git-cliff" = "latest"
+git-cliff = "latest"
 "cargo:cargo-release" = "latest"
-"aqua:mold" = "latest"
+mold = "latest"
+cargo-dist = "latest"
 
 [tasks.pre-commit]
 description = "Pre-commit checks: fmt"
