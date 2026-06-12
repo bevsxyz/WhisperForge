@@ -211,6 +211,8 @@ fn backends_json() -> Result<serde_json::Value> {
         "cpu": true,
         "wgpu": cfg!(feature = "gpu"),
         "cuda": cfg!(feature = "cuda"),
+        "metal": cfg!(target_os = "macos"),
+        "vulkan": cfg!(any(target_os = "linux", target_os = "windows")),
         "auto": format!("{auto:?}").to_lowercase(),
     }))
 }
@@ -286,6 +288,22 @@ fn print_backends() -> Result<()> {
             "yes"
         } else {
             "no  (rebuild with `--features cuda`)"
+        }
+    );
+    println!(
+        "  metal : {}",
+        if cfg!(target_os = "macos") {
+            "yes"
+        } else {
+            "no  (macOS only)"
+        }
+    );
+    println!(
+        "  vulkan: {}",
+        if cfg!(any(target_os = "linux", target_os = "windows")) {
+            "yes"
+        } else {
+            "no  (macOS uses metal)"
         }
     );
     let auto = resolve(DeviceChoice::Auto)?;
