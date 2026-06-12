@@ -6,6 +6,7 @@ git-cliff = "latest"
 "cargo:cargo-release" = "latest"
 mold = "latest"
 cargo-dist = "latest"
+"cargo:cargo-deny" = "latest"
 
 [tasks.pre-commit]
 description = "Pre-commit checks: fmt"
