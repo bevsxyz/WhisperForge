@@ -54,7 +54,7 @@ wforge transcribe audio.wav -m tiny.en --device cuda
 
 `--models-dir` is a global flag (honors `WF_MODELS_DIR`); it resolves in order: flag → env → `./models/` if present in cwd → platform cache dir (`~/.cache/whisperforge/models` on Linux). The cache dir is separate from hf-hub's own download cache.
 
-`wforge transcribe --device <auto|cpu|wgpu|cuda>` picks the backend at runtime. `auto` prefers CUDA (when built with `--features cuda`), then WGPU (when built with the default `gpu` feature), then CPU.
+`wforge transcribe --device <auto|cpu|metal|vulkan|cuda>` picks the backend at runtime. **Releases ship platform-native GPU backends:** Metal on macOS/Apple Silicon, Vulkan on Linux/Windows, CPU/Flex everywhere. **CUDA is a source-build opt-in** (`--features cuda`, not in releases); when building with it, `auto` prefers CUDA → Metal/Vulkan → CPU. Fallback is always CPU (NdArray on Flex backend).
 
 ## Commit Message Convention
 
@@ -179,7 +179,7 @@ Goal was to clean the crate / CLI surface before streaming work. Targets 0.4.0 (
 - ✅ `--cpu` removed; replaced with `--device <auto|cpu|wgpu|cuda>` defaulting to `auto`
 - ✅ Native CUDA via optional `burn-cuda` (feature `cuda`); `auto` preference is cuda → wgpu → cpu
 - ⏸ Commit 6 (VRAM-aware encoder-batch auto-tune) — **deferred**. Heuristics had a poor cost/risk ratio (extra deps for sysinfo + wgpu adapter probe + WSL/integrated-GPU reporting quirks vs. a modest UX win nobody had asked for). Users override with `--encoder-batch-size` for now.
-- ⏸ Commit 7 (Windows wgpu runtime fallback) — **deferred**. Upstream `windows`-crate version conflict between wgpu-hal and gpu-allocator is *compile-time*; no runtime probe can rescue it. Windows still ships CPU-only via release.yml `--no-default-features`. Revisit when `grep -A1 'name = "windows"' Cargo.lock` shows one version.
+- ✅ Commit 7 (Windows wgpu runtime fallback) — **resolved**. The upstream `windows`-crate version conflict between wgpu-hal and gpu-allocator was fixed by bumping `hf-hub` to 0.5, which collapsed the lockfile to a single `windows` major. Windows now ships Vulkan via releases (via target-table feature gating in Cargo.toml).
 
 ### Phase F — Streaming Realtime ✅ COMPLETE (UAT-certified)
 
