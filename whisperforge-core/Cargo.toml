@@ -34,7 +34,8 @@ cpal = { workspace = true }
 ringbuf = { workspace = true }
 tracing = { workspace = true }
 ort = { workspace = true }
-hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
+hf-hub = { version = "0.5", default-features = false, features = ["tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt"] }
 hound = "3.5"
 
 [features]

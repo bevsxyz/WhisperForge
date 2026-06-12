@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use hf_hub::{Repo, RepoType, api::sync::ApiBuilder};
+use hf_hub::{Repo, RepoType, api::tokio::ApiBuilder};
 use ort::{session::Session, value::TensorRef};
 use std::path::{Path, PathBuf};
 
@@ -99,17 +99,26 @@ pub fn ensure_silero_model(models_dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(models_dir)
         .with_context(|| format!("create models dir {}", models_dir.display()))?;
 
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("creating tokio runtime")?;
+    rt.block_on(download_silero_model(models_dir, &target))
+}
+
+async fn download_silero_model(_models_dir: &Path, target: &Path) -> Result<PathBuf> {
     let api = ApiBuilder::from_env()
         .build()
         .context("HuggingFace API init")?;
     let cached = api
         .repo(Repo::new(SILERO_REPO.to_string(), RepoType::Model))
         .get(SILERO_HF_FILE)
+        .await
         .with_context(|| format!("download {SILERO_HF_FILE} from {SILERO_REPO}"))?;
 
-    std::fs::copy(&cached, &target).with_context(|| format!("copy to {}", target.display()))?;
+    std::fs::copy(&cached, target).with_context(|| format!("copy to {}", target.display()))?;
 
-    Ok(target)
+    Ok(target.to_path_buf())
 }
 
 #[cfg(test)]
