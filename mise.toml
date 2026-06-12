@@ -7,6 +7,8 @@ git-cliff = "latest"
 mold = "latest"
 cargo-dist = "latest"
 "cargo:cargo-deny" = "latest"
+"cargo:cargo-machete" = "latest"
+"cargo:cargo-bloat" = "latest"
 
 [tasks.pre-commit]
 description = "Pre-commit checks: fmt"
@@ -48,3 +50,19 @@ run="""
 set -e
 cargo-release release "$@"
 """
+
+[tasks.audit]
+description = "Audit deps: advisories, bans, licenses, sources"
+run = "cargo deny check"
+
+[tasks.unused-deps]
+description = "Find declared-but-unused dependencies"
+run = "cargo machete"
+
+[tasks.deps-dupes]
+description = "List duplicate dependency versions"
+run = "cargo tree --duplicates --edges normal"
+
+[tasks.bloat]
+description = "Binary size attributed per crate"
+run = "cargo bloat --release -p whisperforge --crates"
