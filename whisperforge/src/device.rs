@@ -12,6 +12,8 @@ pub enum DeviceChoice {
     Cpu,
     Wgpu,
     Cuda,
+    Metal,
+    Vulkan,
 }
 
 /// Runtime-resolved backend. Variants are feature-gated to match what was
@@ -23,6 +25,10 @@ pub enum ResolvedDevice {
     Wgpu,
     #[cfg(feature = "cuda")]
     Cuda,
+    #[cfg(target_os = "macos")]
+    Metal,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    Vulkan,
 }
 
 /// Map a `DeviceChoice` to a `ResolvedDevice`, erroring with a rebuild hint
@@ -37,11 +43,33 @@ pub fn resolve(choice: DeviceChoice) -> Result<ResolvedDevice> {
             {
                 Ok(ResolvedDevice::Cuda)
             }
-            #[cfg(all(not(feature = "cuda"), feature = "gpu"))]
+            #[cfg(all(not(feature = "cuda"), target_os = "macos"))]
+            {
+                Ok(ResolvedDevice::Metal)
+            }
+            #[cfg(all(
+                not(feature = "cuda"),
+                not(target_os = "macos"),
+                any(target_os = "linux", target_os = "windows")
+            ))]
+            {
+                Ok(ResolvedDevice::Vulkan)
+            }
+            #[cfg(all(
+                not(feature = "cuda"),
+                not(target_os = "macos"),
+                not(any(target_os = "linux", target_os = "windows")),
+                feature = "gpu"
+            ))]
             {
                 Ok(ResolvedDevice::Wgpu)
             }
-            #[cfg(all(not(feature = "cuda"), not(feature = "gpu")))]
+            #[cfg(all(
+                not(feature = "cuda"),
+                not(target_os = "macos"),
+                not(any(target_os = "linux", target_os = "windows")),
+                not(feature = "gpu")
+            ))]
             {
                 Ok(ResolvedDevice::Cpu)
             }
@@ -68,6 +96,30 @@ pub fn resolve(choice: DeviceChoice) -> Result<ResolvedDevice> {
             {
                 Err(anyhow::anyhow!(
                     "CUDA backend not enabled. Rebuild with `--features cuda`."
+                ))
+            }
+        }
+        DeviceChoice::Metal => {
+            #[cfg(target_os = "macos")]
+            {
+                Ok(ResolvedDevice::Metal)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(anyhow::anyhow!(
+                    "Metal backend is only available on macOS (Apple)."
+                ))
+            }
+        }
+        DeviceChoice::Vulkan => {
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            {
+                Ok(ResolvedDevice::Vulkan)
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            {
+                Err(anyhow::anyhow!(
+                    "Vulkan backend ships on Linux/Windows; on macOS use --device metal."
                 ))
             }
         }

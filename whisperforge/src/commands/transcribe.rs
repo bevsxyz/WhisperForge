@@ -666,5 +666,27 @@ pub fn run(args: TranscribeArgs, models_dir: Option<PathBuf>) -> Result<()> {
                 batch_mel_spectrograms::<B>(chunks, 400, 160, 80, dev)
             })
         }
+        #[cfg(target_os = "macos")]
+        ResolvedDevice::Metal => {
+            use burn::backend::Metal;
+            use burn::backend::wgpu::{WgpuDevice, graphics, init_setup};
+            let device = WgpuDevice::default();
+            init_setup::<graphics::Metal>(&device, Default::default());
+            println!("Backend: Metal (MSL)");
+            run_backend::<Metal>(args, models_dir, device, false, |chunks, dev| {
+                batch_mel_spectrograms::<Metal>(chunks, 400, 160, 80, dev)
+            })
+        }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        ResolvedDevice::Vulkan => {
+            use burn::backend::Vulkan;
+            use burn::backend::wgpu::{WgpuDevice, graphics, init_setup};
+            let device = WgpuDevice::default();
+            init_setup::<graphics::Vulkan>(&device, Default::default());
+            println!("Backend: Vulkan (SPIR-V)");
+            run_backend::<Vulkan>(args, models_dir, device, false, |chunks, dev| {
+                batch_mel_spectrograms::<Vulkan>(chunks, 400, 160, 80, dev)
+            })
+        }
     }
 }

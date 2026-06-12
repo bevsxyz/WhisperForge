@@ -207,6 +207,24 @@ pub fn run(args: StreamArgs, models_dir: Option<PathBuf>) -> Result<()> {
             eprintln!("Backend: CUDA (CubeCL)");
             run_stream::<B>(args, models_dir, CudaDevice::default())
         }
+        #[cfg(target_os = "macos")]
+        ResolvedDevice::Metal => {
+            use burn::backend::Metal;
+            use burn::backend::wgpu::{WgpuDevice, graphics, init_setup};
+            let device = WgpuDevice::default();
+            init_setup::<graphics::Metal>(&device, Default::default());
+            eprintln!("Backend: Metal (MSL)");
+            run_stream::<Metal>(args, models_dir, device)
+        }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        ResolvedDevice::Vulkan => {
+            use burn::backend::Vulkan;
+            use burn::backend::wgpu::{WgpuDevice, graphics, init_setup};
+            let device = WgpuDevice::default();
+            init_setup::<graphics::Vulkan>(&device, Default::default());
+            eprintln!("Backend: Vulkan (SPIR-V)");
+            run_stream::<Vulkan>(args, models_dir, device)
+        }
     }
 }
 
