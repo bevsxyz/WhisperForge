@@ -14,7 +14,7 @@ tap = "bevsxyz/homebrew-tap"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew", "npm"]
 # Features to pass to cargo build
-features = ["gpu"]
+features = []
 # Checksums to generate for each App
 checksum = "sha256"
 # Whether to install an updater program

@@ -83,4 +83,4 @@ jobs:
       # .cargo/config.toml [target.x86_64-pc-windows-msvc] rustflags this job exists
       # to validate. (The `check` job sets RUSTFLAGS=mold, which is why this is separate.)
       - name: Build wforge (dist profile, gpu) — link only
-        run: cargo build --profile dist --features gpu -p whisperforge --target x86_64-pc-windows-msvc --locked
+        run: cargo build --profile dist -p whisperforge --target x86_64-pc-windows-msvc --locked
